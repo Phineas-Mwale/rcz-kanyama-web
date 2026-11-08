@@ -2,7 +2,7 @@
 
 The official congregation app for RCZ Kanyama, built with Flutter. It includes
 member registration, hymns, sermons, notices, and a Secretariat dashboard backed
-by Supabase.
+by Supabase. 
 
 ## Run locally
 
