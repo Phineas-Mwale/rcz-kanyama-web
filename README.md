@@ -31,4 +31,4 @@ Never put a Supabase service-role key in the app or repository.
 This repository includes [`vercel.json`](vercel.json), which serves the committed
 Flutter web build as a single-page application. After rebuilding, commit the
 updated `build/web` directory and push it to GitHub; Vercel will redeploy it
-automatically.
+automatically. 
