@@ -1,0 +1,15 @@
+World English Bible (WEB)
+
+The World English Bible text is in the public domain.
+
+Source data:
+https://github.com/TehShrike/world-english-bible
+
+Official WEB website:
+https://worldenglish.bible/
+
+Translation: World English Bible
+Language: English
+Version: 1.0.0
+
+Packaged for offline reading in RCZ Kanyama.

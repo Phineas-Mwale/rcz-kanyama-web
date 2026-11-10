@@ -13,6 +13,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:youtube_player_iframe/youtube_player_iframe.dart';
 
 import 'supabase_config.dart';
+import 'features/bible/presentation/bible_home_page.dart';
 
 const _brandBlue = Color(0xFF34358F);
 const _sections = [
@@ -61,8 +62,7 @@ class _RczKanyamaAppState extends State<RczKanyamaApp> {
   late String? _section = widget.preferences.getString('member_section');
   late String? _phone = widget.preferences.getString('member_phone');
 
-  bool get _hasProfile =>
-      _name != null && _section != null && _phone != null;
+  bool get _hasProfile => _name != null && _section != null && _phone != null;
 
   @override
   void initState() {
@@ -72,32 +72,48 @@ class _RczKanyamaAppState extends State<RczKanyamaApp> {
     }
   }
 
-  Future<void> _saveProfile(
-    String name,
-    String phone,
-    String section,
-  ) async {
+  Future<void> _saveProfile(String name, String phone, String section) async {
+    // Save to the device only after Supabase confirms the profile update.
+    await _syncMember(
+      name,
+      phone,
+      section,
+      throwOnFailure: true,
+    );
+
     await widget.preferences.setString('member_name', name);
     await widget.preferences.setString('member_phone', phone);
     await widget.preferences.setString('member_section', section);
+
+    if (!mounted) return;
     setState(() {
       _name = name;
       _phone = phone;
       _section = section;
     });
-    await _syncMember(name, phone, section);
   }
 
   Future<void> _syncMember(
     String name,
     String phone,
-    String section,
-  ) async {
+    String section, {
+    bool throwOnFailure = false,
+  }) async {
     try {
+      final client = Supabase.instance.client;
+
+      // Member profiles use anonymous Supabase authentication.
+      if (client.auth.currentSession == null) {
+        await client.auth.signInAnonymously();
+      }
+
+      // Keep the same device ID so an edit updates the existing member row.
       final deviceId =
           widget.preferences.getString('device_id') ?? const Uuid().v4();
+
       await widget.preferences.setString('device_id', deviceId);
-      await Supabase.instance.client.rpc(
+
+      await client.rpc(
         'register_member',
         params: {
           'p_device_id': deviceId,
@@ -107,10 +123,17 @@ class _RczKanyamaAppState extends State<RczKanyamaApp> {
           'p_app_version': '1.0.0',
         },
       );
+
+      debugPrint('Member profile synced successfully.');
+    } on AuthException catch (error) {
+      debugPrint('Member authentication could not sync: ${error.message}');
+      if (throwOnFailure) rethrow;
     } on PostgrestException catch (error) {
-      debugPrint('Member registration could not sync: ${error.message}');
+      debugPrint('Member profile could not sync: ${error.message}');
+      if (throwOnFailure) rethrow;
     } catch (error) {
-      debugPrint('Member registration could not sync: $error');
+      debugPrint('Member profile could not sync: $error');
+      if (throwOnFailure) rethrow;
     }
   }
 
@@ -142,15 +165,16 @@ class _RczKanyamaAppState extends State<RczKanyamaApp> {
       theme: _theme(lightScheme),
       darkTheme: _theme(darkScheme),
       builder: (context, child) => MediaQuery(
-        data: MediaQuery.of(context).copyWith(
-          textScaler: TextScaler.linear(_textScale),
-        ),
+        data: MediaQuery.of(context)
+            .copyWith(textScaler: TextScaler.linear(_textScale)),
         child: child!,
       ),
       home: _hasProfile
           ? MainShell(
               name: _name!,
               section: _section!,
+              phone: _phone!,
+              onSaveProfile: _saveProfile,
               preferences: widget.preferences,
               isDark: _isDark,
               onToggleTheme: _toggleTheme,
@@ -205,7 +229,8 @@ class _RczKanyamaAppState extends State<RczKanyamaApp> {
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({required this.onComplete, super.key});
 
-  final void Function(String name, String phone, String section) onComplete;
+  final Future<void> Function(String name, String phone, String section)
+      onComplete;
 
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();
@@ -216,6 +241,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final _phoneController = TextEditingController();
   String? _section;
   int _step = 0;
+  bool _saving = false;
 
   @override
   void dispose() {
@@ -224,7 +250,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     super.dispose();
   }
 
-  void _next() {
+  Future<void> _next() async {
+    if (_saving) return;
     if (_step == 0 && _nameController.text.trim().isEmpty) {
       _showMessage('Please enter your name first.');
       return;
@@ -239,11 +266,23 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       return;
     }
     if (_step == 2) {
-      widget.onComplete(
-        _nameController.text.trim(),
-        _phoneController.text.trim(),
-        _section!,
-      );
+      setState(() => _saving = true);
+      try {
+        await widget.onComplete(
+          _nameController.text.trim(),
+          _phoneController.text.trim(),
+          _section!,
+        );
+      } catch (error) {
+        debugPrint('Initial member profile could not be saved: $error');
+        if (mounted) {
+          _showMessage(
+            'We could not save your details. Please check your connection and try again.',
+          );
+        }
+      } finally {
+        if (mounted) setState(() => _saving = false);
+      }
       return;
     }
     setState(() => _step++);
@@ -307,8 +346,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       isNameStep
                           ? 'Welcome home'
                           : isPhoneStep
-                              ? 'Stay connected'
-                              : 'Find your section',
+                          ? 'Stay connected'
+                          : 'Find your section',
                       style: Theme.of(context).textTheme.headlineMedium
                           ?.copyWith(fontWeight: FontWeight.w700),
                     ),
@@ -317,8 +356,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       isNameStep
                           ? 'What should we call you?'
                           : isPhoneStep
-                              ? 'Add your Zambian mobile number'
-                              : 'Which section do you worship with?',
+                          ? 'Add your Zambian mobile number'
+                          : 'Which section do you worship with?',
                     ),
                     const SizedBox(height: 24),
                     if (isNameStep)
@@ -422,8 +461,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       ),
                     const SizedBox(height: 28),
                     FilledButton(
-                      onPressed: _next,
-                      child: Text(isNameStep ? 'Continue' : 'Enter the app'),
+                      onPressed: _saving ? null : _next,
+                      child: _saving
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Text(isNameStep ? 'Continue' : 'Enter the app'),
                     ),
                     const SizedBox(height: 16),
                     Text(
@@ -446,6 +491,8 @@ class MainShell extends StatefulWidget {
   const MainShell({
     required this.name,
     required this.section,
+    required this.phone,
+    required this.onSaveProfile,
     required this.preferences,
     required this.isDark,
     required this.onToggleTheme,
@@ -455,6 +502,9 @@ class MainShell extends StatefulWidget {
 
   final String name;
   final String section;
+  final String phone;
+  final Future<void> Function(String name, String phone, String section)
+      onSaveProfile;
   final SharedPreferences preferences;
   final bool isDark;
   final VoidCallback onToggleTheme;
@@ -512,6 +562,8 @@ class _MainShellState extends State<MainShell> {
       MorePage(
         name: widget.name,
         section: widget.section,
+        phone: widget.phone,
+        onSaveProfile: widget.onSaveProfile,
         isDark: widget.isDark,
         preferences: widget.preferences,
         onToggleTheme: widget.onToggleTheme,
@@ -541,9 +593,7 @@ class _MainShellState extends State<MainShell> {
             icon: _noticeCount == 0
                 ? Icon(Icons.campaign_outlined)
                 : Badge(
-                    label: Text(
-                      _noticeCount > 99 ? '99+' : '$_noticeCount',
-                    ),
+                    label: Text(_noticeCount > 99 ? '99+' : '$_noticeCount'),
                     child: const Icon(Icons.campaign_outlined),
                   ),
             label: 'Notices',
@@ -571,29 +621,65 @@ class HomePage extends StatefulWidget {
   final ValueChanged<int> onOpenPage;
 
   static const _verses = [
-    ('“The Lord is my shepherd; I shall not want.”', 'Psalm 23:1', '“Ambuye ndiye m’busa wanga; sindidzasowa kanthu.”'),
+    (
+      '“The Lord is my shepherd; I shall not want.”',
+      'Psalm 23:1',
+      '“Ambuye ndiye m’busa wanga; sindidzasowa kanthu.”',
+    ),
     (
       '“I can do all things through Christ who strengthens me.”',
-      'Philippians 4:13', '“Ndikhoza zonse mwa Kristu wondipatsa mphamvu.”',
+      'Philippians 4:13',
+      '“Ndikhoza zonse mwa Kristu wondipatsa mphamvu.”',
     ),
     (
       '“The Lord is my light and my salvation—whom shall I fear?”',
-      'Psalm 27:1', '“Ambuye ndiye kuunika kwanga ndi chipulumutso changa; ndidzaopa ndani?”',
+      'Psalm 27:1',
+      '“Ambuye ndiye kuunika kwanga ndi chipulumutso changa; ndidzaopa ndani?”',
     ),
-    ('“Be strong and courageous. Do not be afraid.”', 'Joshua 1:9', '“Ulimbe mtima ndi kukhala wolimba mtima. Usaope.”'),
-    ('“Those who hope in the Lord will renew their strength.”', 'Isaiah 40:31', '“Koma iwo akuyembekeza Yehova adzapeza mphamvu zatsopano.”'),
-    ('“The joy of the Lord is your strength.”', 'Nehemiah 8:10', '“Chimwemwe cha Yehova ndicho mphamvu yanu.”'),
-    ('“Cast all your anxiety on him because he cares for you.”', '1 Peter 5:7', '“Ponyani nkhawa zanu zonse pa iye, chifukwa amakusamalirani.”'),
-    ('“Your word is a lamp for my feet, a light on my path.”', 'Psalm 119:105', '“Mawu anu ndi nyale ya kumapazi anga, ndi kuunika kwa panjira panga.”'),
-    ('“The Lord bless you and keep you.”', 'Numbers 6:24', '“Yehova akudalitseni ndi kukusungani.”'),
-    ('“Let all that you do be done in love.”', '1 Corinthians 16:14', '“Zonse zimene muchita zichitike mwachikondi.”'),
+    (
+      '“Be strong and courageous. Do not be afraid.”',
+      'Joshua 1:9',
+      '“Ulimbe mtima ndi kukhala wolimba mtima. Usaope.”',
+    ),
+    (
+      '“Those who hope in the Lord will renew their strength.”',
+      'Isaiah 40:31',
+      '“Koma iwo akuyembekeza Yehova adzapeza mphamvu zatsopano.”',
+    ),
+    (
+      '“The joy of the Lord is your strength.”',
+      'Nehemiah 8:10',
+      '“Chimwemwe cha Yehova ndicho mphamvu yanu.”',
+    ),
+    (
+      '“Cast all your anxiety on him because he cares for you.”',
+      '1 Peter 5:7',
+      '“Ponyani nkhawa zanu zonse pa iye, chifukwa amakusamalirani.”',
+    ),
+    (
+      '“Your word is a lamp for my feet, a light on my path.”',
+      'Psalm 119:105',
+      '“Mawu anu ndi nyale ya kumapazi anga, ndi kuunika kwa panjira panga.”',
+    ),
+    (
+      '“The Lord bless you and keep you.”',
+      'Numbers 6:24',
+      '“Yehova akudalitseni ndi kukusungani.”',
+    ),
+    (
+      '“Let all that you do be done in love.”',
+      '1 Corinthians 16:14',
+      '“Zonse zimene muchita zichitike mwachikondi.”',
+    ),
     (
       '“God is our refuge and strength, an ever-present help in trouble.”',
-      'Psalm 46:1', '“Mulungu ndiye pothawirapo pathu ndi mphamvu yathu.”',
+      'Psalm 46:1',
+      '“Mulungu ndiye pothawirapo pathu ndi mphamvu yathu.”',
     ),
     (
       '“Give thanks to the Lord, for he is good; his love endures forever.”',
-      'Psalm 107:1', '“Yamikani Yehova, pakuti iye ndi wabwino; chikondi chake nchosatha.”',
+      'Psalm 107:1',
+      '“Yamikani Yehova, pakuti iye ndi wabwino; chikondi chake nchosatha.”',
     ),
   ];
 
@@ -602,7 +688,8 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  int _verseIndex = DateTime.now().difference(DateTime(2024)).inDays %
+  int _verseIndex =
+      DateTime.now().difference(DateTime(2024)).inDays %
       HomePage._verses.length;
   Timer? _verseTimer;
 
@@ -610,8 +697,11 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _verseTimer = Timer.periodic(const Duration(seconds: 8), (_) {
-      if (mounted) setState(() => _verseIndex =
-          (_verseIndex + 1) % HomePage._verses.length);
+      if (mounted) {
+        setState(
+          () => _verseIndex = (_verseIndex + 1) % HomePage._verses.length,
+        );
+      }
     });
   }
 
@@ -665,6 +755,37 @@ class _HomePageState extends State<HomePage> {
           Text('Tiyeni limodzi', style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 18),
           _ActionGrid(onOpenPage: widget.onOpenPage),
+          const SizedBox(height: 14),
+          Card(
+            clipBehavior: Clip.antiAlias,
+            child: ListTile(
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 18,
+                vertical: 10,
+              ),
+              leading: Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primaryContainer,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(
+                  Icons.auto_stories_rounded,
+                  color: Theme.of(context).colorScheme.onPrimaryContainer,
+                ),
+              ),
+              title: const Text(
+                'Read the Bible',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              subtitle: const Text('Explore Scripture in Chichewa and more'),
+              trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 16),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const BibleHomePage()),
+              ),
+            ),
+          ),
           const SizedBox(height: 18),
           Card(
             child: Column(
@@ -767,22 +888,10 @@ class SermonsPage extends StatefulWidget {
 
 class _SermonsPageState extends State<SermonsPage> {
   static const _fallback = [
-    SermonVideo(
-      id: 'GYd4KOvEutA',
-      title: 'Recent worship service',
-    ),
-    SermonVideo(
-      id: 'K73245kzX1I',
-      title: 'Recent worship service',
-    ),
-    SermonVideo(
-      id: '2cEjuD0NOOo',
-      title: 'Recent worship service',
-    ),
-    SermonVideo(
-      id: 'yzUp9XYzojQ',
-      title: 'Recent worship service',
-    ),
+    SermonVideo(id: 'GYd4KOvEutA', title: 'Recent worship service'),
+    SermonVideo(id: 'K73245kzX1I', title: 'Recent worship service'),
+    SermonVideo(id: '2cEjuD0NOOo', title: 'Recent worship service'),
+    SermonVideo(id: 'yzUp9XYzojQ', title: 'Recent worship service'),
   ];
 
   late final YoutubePlayerController _controller;
@@ -853,8 +962,7 @@ class _SermonsPageState extends State<SermonsPage> {
         if (loaded.isNotEmpty) {
           _videos = loaded;
           _selectedVideo = 0;
-        } else {
-        }
+        } else {}
       });
       if (loaded.isNotEmpty) {
         await _controller.loadVideoById(videoId: loaded.first.id);
@@ -928,131 +1036,141 @@ class _SermonsPageState extends State<SermonsPage> {
               ),
             ),
           ),
-            Expanded(
-              child: ListView(
-                physics: const BouncingScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
-                children: [
-            Row(
+          Expanded(
+            child: ListView(
+              physics: const BouncingScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
               children: [
-                Expanded(
-                  child: Text(
-                    'Latest messages',
-                    style: Theme.of(context).textTheme.titleLarge
-                        ?.copyWith(fontWeight: FontWeight.w800),
-                  ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Latest messages',
+                        style: Theme.of(context).textTheme.titleLarge
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: _showSavedOnly
+                          ? 'Show all sermons'
+                          : 'Show saved sermons',
+                      onPressed: () =>
+                          setState(() => _showSavedOnly = !_showSavedOnly),
+                      icon: Icon(
+                        _showSavedOnly ? Icons.bookmark : Icons.bookmark_border,
+                      ),
+                    ),
+                  ],
                 ),
-                IconButton(
-                  tooltip: _showSavedOnly ? 'Show all sermons' : 'Show saved sermons',
-                  onPressed: () => setState(() => _showSavedOnly = !_showSavedOnly),
-                  icon: Icon(
-                    _showSavedOnly ? Icons.bookmark : Icons.bookmark_border,
-                  ),
-                ),
+                const SizedBox(height: 10),
+                if (_videos.isNotEmpty)
+                  ..._videos
+                      .asMap()
+                      .entries
+                      .where(
+                        (entry) =>
+                            !_showSavedOnly ||
+                            _favourites.contains(entry.value.id),
+                      )
+                      .take(10)
+                      .map((entry) {
+                        final index = entry.key;
+                        final video = entry.value;
+                        final saved = _favourites.contains(video.id);
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          clipBehavior: Clip.antiAlias,
+                          child: ListTile(
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 7,
+                            ),
+                            leading: ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: Image.network(
+                                video.thumbnail ??
+                                    'https://img.youtube.com/vi/${video.id}/mqdefault.jpg',
+                                width: 104,
+                                height: 66,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, _, _) => Container(
+                                  width: 104,
+                                  height: 66,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .surfaceContainerHighest,
+                                  child: const Icon(Icons.play_circle_outline),
+                                ),
+                              ),
+                            ),
+                            title: Text(
+                              video.title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            subtitle: Text(
+                              index == _selectedVideo
+                                  ? 'Now playing'
+                                  : 'Watch sermon',
+                              style: TextStyle(
+                                color: index == _selectedVideo
+                                    ? Theme.of(context).colorScheme.primary
+                                    : null,
+                                fontWeight: index == _selectedVideo
+                                    ? FontWeight.w700
+                                    : null,
+                              ),
+                            ),
+                            tileColor: index == _selectedVideo
+                                ? Theme.of(context).colorScheme.primaryContainer
+                                      .withValues(alpha: .45)
+                                : null,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              side: BorderSide(
+                                color: index == _selectedVideo
+                                    ? Theme.of(context).colorScheme.primary
+                                    : Colors.transparent,
+                              ),
+                            ),
+                            onTap: () async {
+                              setState(() => _selectedVideo = index);
+                              await _controller.loadVideoById(
+                                videoId: video.id,
+                              );
+                            },
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  tooltip: saved
+                                      ? 'Remove from saved'
+                                      : 'Save sermon',
+                                  onPressed: () => _toggleFavourite(video.id),
+                                  icon: Icon(
+                                    saved
+                                        ? Icons.bookmark
+                                        : Icons.bookmark_border,
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Share sermon',
+                                  onPressed: () => _shareVideo(video),
+                                  icon: const Icon(Icons.share_outlined),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }),
               ],
             ),
-            const SizedBox(height: 10),
-            if (_videos.isNotEmpty)
-              ..._videos.asMap().entries
-                  .where(
-                    (entry) =>
-                        !_showSavedOnly || _favourites.contains(entry.value.id),
-                  )
-                  .take(10)
-                  .map((entry) {
-                final index = entry.key;
-                final video = entry.value;
-                final saved = _favourites.contains(video.id);
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  clipBehavior: Clip.antiAlias,
-                  child: ListTile(
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 7,
-                    ),
-                    leading: ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: Image.network(
-                        video.thumbnail ??
-                            'https://img.youtube.com/vi/${video.id}/mqdefault.jpg',
-                        width: 104,
-                        height: 66,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, _, _) => Container(
-                          width: 104,
-                          height: 66,
-                          color: Theme.of(context)
-                              .colorScheme
-                              .surfaceContainerHighest,
-                          child: const Icon(Icons.play_circle_outline),
-                        ),
-                      ),
-                    ),
-                    title: Text(
-                      video.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    subtitle: Text(
-                      index == _selectedVideo
-                          ? 'Now playing'
-                          : 'Watch sermon',
-                      style: TextStyle(
-                        color: index == _selectedVideo
-                            ? Theme.of(context).colorScheme.primary
-                            : null,
-                        fontWeight: index == _selectedVideo
-                            ? FontWeight.w700
-                            : null,
-                      ),
-                    ),
-                    tileColor: index == _selectedVideo
-                        ? Theme.of(context)
-                            .colorScheme
-                            .primaryContainer
-                            .withValues(alpha: .45)
-                        : null,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                      side: BorderSide(
-                        color: index == _selectedVideo
-                            ? Theme.of(context).colorScheme.primary
-                            : Colors.transparent,
-                      ),
-                    ),
-                    onTap: () async {
-                      setState(() => _selectedVideo = index);
-                      await _controller.loadVideoById(videoId: video.id);
-                    },
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          tooltip: saved ? 'Remove from saved' : 'Save sermon',
-                          onPressed: () => _toggleFavourite(video.id),
-                          icon: Icon(
-                            saved
-                                ? Icons.bookmark
-                                : Icons.bookmark_border,
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: 'Share sermon',
-                          onPressed: () => _shareVideo(video),
-                          icon: const Icon(Icons.share_outlined),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }),
-                ],
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1229,9 +1347,8 @@ class _HymnsPageState extends State<HymnsPage> {
         ),
         IconButton(
           tooltip: _showFavouritesOnly ? 'Show all hymns' : 'Favourite hymns',
-          onPressed: () => setState(
-            () => _showFavouritesOnly = !_showFavouritesOnly,
-          ),
+          onPressed: () =>
+              setState(() => _showFavouritesOnly = !_showFavouritesOnly),
           icon: Icon(
             _showFavouritesOnly ? Icons.favorite : Icons.favorite_border,
           ),
@@ -1268,11 +1385,7 @@ class _HymnsPageState extends State<HymnsPage> {
             children: [
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-                child: Column(
-                  children: [
-                    const SizedBox(height: 4),
-                  ],
-                ),
+                child: Column(children: [const SizedBox(height: 4)]),
               ),
               Expanded(
                 child: ListView.builder(
@@ -1385,7 +1498,10 @@ class _HymnReaderPageState extends State<HymnReaderPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('Reading size', style: TextStyle(fontWeight: FontWeight.w800)),
+              const Text(
+                'Reading size',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
               Slider(
                 value: value,
                 min: .8,
@@ -1449,7 +1565,8 @@ class _HymnReaderPageState extends State<HymnReaderPage> {
             tooltip: 'Share hymn',
             onPressed: () => SharePlus.instance.share(
               ShareParams(
-                text: '${_hymnTitle(widget.lyrics, widget.hymn.number)}\n\n${widget.lyrics}\n\nRCZ - Kanyama',
+                text:
+                    '${_hymnTitle(widget.lyrics, widget.hymn.number)}\n\n${widget.lyrics}\n\nRCZ - Kanyama',
               ),
             ),
             icon: const Icon(Icons.share_outlined),
@@ -2758,8 +2875,9 @@ class _SecretariatDashboardPageState extends State<SecretariatDashboardPage> {
             'id,title,body,category,event_date,is_published,created_at,photo_url,photo_path,photo_expires_at',
           )
           .order('created_at', ascending: false);
-      if (mounted)
+      if (mounted) {
         setState(() => _items = List<Map<String, dynamic>>.from(rows));
+      }
     } catch (error) {
       _message(
         'Could not load Secretariat notices. Check database permissions.',
@@ -2801,10 +2919,10 @@ class _SecretariatDashboardPageState extends State<SecretariatDashboardPage> {
 
   List<Map<String, dynamic>> get _visibleMembers =>
       _memberSection == 'All sections'
-          ? _members
-          : _members
-              .where((member) => member['section'] == _memberSection)
-              .toList();
+      ? _members
+      : _members
+            .where((member) => member['section'] == _memberSection)
+            .toList();
 
   String _largestSection() {
     if (_members.isEmpty) return '—';
@@ -2843,8 +2961,7 @@ class _SecretariatDashboardPageState extends State<SecretariatDashboardPage> {
           XFile.fromData(
             Uint8List.fromList(bytes),
             name: 'rcz_kanyama_members.xlsx',
-            mimeType:
-                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
           ),
         ],
       ),
@@ -2852,25 +2969,25 @@ class _SecretariatDashboardPageState extends State<SecretariatDashboardPage> {
   }
 
   Future<void> _cleanupExpiredPhotos() async {
-      final client = Supabase.instance.client;
-      final expired = await client
+    final client = Supabase.instance.client;
+    final expired = await client
+        .from('church_notices')
+        .select('id,photo_path')
+        .not('photo_path', 'is', null)
+        .lt('photo_expires_at', DateTime.now().toUtc().toIso8601String());
+    for (final row in expired) {
+      final path = row['photo_path']?.toString();
+      if (path != null && path.isNotEmpty) {
+        await client.storage.from('notice-photos').remove([path]);
+      }
+      await client
           .from('church_notices')
-          .select('id,photo_path')
-          .not('photo_path', 'is', null)
-          .lt('photo_expires_at', DateTime.now().toUtc().toIso8601String());
-      for (final row in expired) {
-        final path = row['photo_path']?.toString();
-        if (path != null && path.isNotEmpty) {
-          await client.storage.from('notice-photos').remove([path]);
-        }
-        await client
-            .from('church_notices')
-            .update({
-              'photo_url': null,
-              'photo_path': null,
-              'photo_expires_at': null,
-            })
-            .eq('id', row['id']);
+          .update({
+            'photo_url': null,
+            'photo_path': null,
+            'photo_expires_at': null,
+          })
+          .eq('id', row['id']);
     }
   }
 
@@ -2904,89 +3021,90 @@ class _SecretariatDashboardPageState extends State<SecretariatDashboardPage> {
             height: MediaQuery.sizeOf(context).height * .62,
             child: SingleChildScrollView(
               child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                DropdownButtonFormField<String>(
-                  initialValue: categories.contains(category)
-                      ? category
-                      : 'Announcement',
-                  decoration: const InputDecoration(labelText: 'Notice type'),
-                  items: categories
-                      .map(
-                        (item) =>
-                            DropdownMenuItem(value: item, child: Text(item)),
-                      )
-                      .toList(),
-                  onChanged: (value) =>
-                      setDialogState(() => category = value ?? 'Announcement'),
-                ),
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.calendar_month_outlined),
-                  title: const Text('Event date (optional)'),
-                  subtitle: Text(
-                    eventDate == null
-                        ? 'No date selected'
-                        : '${eventDate!.day}/${eventDate!.month}/${eventDate!.year}',
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  DropdownButtonFormField<String>(
+                    initialValue: categories.contains(category)
+                        ? category
+                        : 'Announcement',
+                    decoration: const InputDecoration(labelText: 'Notice type'),
+                    items: categories
+                        .map(
+                          (item) =>
+                              DropdownMenuItem(value: item, child: Text(item)),
+                        )
+                        .toList(),
+                    onChanged: (value) => setDialogState(
+                      () => category = value ?? 'Announcement',
+                    ),
                   ),
-                  trailing: const Icon(Icons.edit_calendar_outlined),
-                  onTap: () async {
-                    final picked = await showDatePicker(
-                      context: dialogContext,
-                      initialDate: eventDate ?? DateTime.now(),
-                      firstDate: DateTime(2020),
-                      lastDate: DateTime(2100),
-                    );
-                    if (picked != null) {
-                      setDialogState(() => eventDate = picked);
-                    }
-                  },
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: title,
-                  textCapitalization: TextCapitalization.sentences,
-                  onChanged: (_) => setDialogState(() {}),
-                  decoration: const InputDecoration(labelText: 'Title'),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: body,
-                  minLines: 10,
-                  maxLines: 16,
-                  onChanged: (_) => setDialogState(() {}),
-                  textCapitalization: TextCapitalization.sentences,
-                  decoration: const InputDecoration(labelText: 'Full notice'),
-                ),
-                const SizedBox(height: 14),
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.photo_camera_outlined),
-                  title: Text(
-                    photo == null ? 'Add a photo' : 'Photo selected',
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.calendar_month_outlined),
+                    title: const Text('Event date (optional)'),
+                    subtitle: Text(
+                      eventDate == null
+                          ? 'No date selected'
+                          : '${eventDate!.day}/${eventDate!.month}/${eventDate!.year}',
+                    ),
+                    trailing: const Icon(Icons.edit_calendar_outlined),
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: dialogContext,
+                        initialDate: eventDate ?? DateTime.now(),
+                        firstDate: DateTime(2020),
+                        lastDate: DateTime(2100),
+                      );
+                      if (picked != null) {
+                        setDialogState(() => eventDate = picked);
+                      }
+                    },
                   ),
-                  subtitle: const Text('Photos are kept for 7 days'),
-                  trailing: photo == null
-                      ? const Icon(Icons.add_photo_alternate_outlined)
-                      : IconButton(
-                          tooltip: 'Remove photo',
-                          onPressed: () => setDialogState(() => photo = null),
-                          icon: const Icon(Icons.close),
-                        ),
-                  onTap: () async {
-                    final picked = await ImagePicker().pickImage(
-                      source: ImageSource.gallery,
-                      imageQuality: 82,
-                      maxWidth: 1800,
-                    );
-                    if (picked != null) {
-                      setDialogState(() => photo = picked);
-                    }
-                  },
-                ),
-              ],
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: title,
+                    textCapitalization: TextCapitalization.sentences,
+                    onChanged: (_) => setDialogState(() {}),
+                    decoration: const InputDecoration(labelText: 'Title'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: body,
+                    minLines: 10,
+                    maxLines: 16,
+                    onChanged: (_) => setDialogState(() {}),
+                    textCapitalization: TextCapitalization.sentences,
+                    decoration: const InputDecoration(labelText: 'Full notice'),
+                  ),
+                  const SizedBox(height: 14),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.photo_camera_outlined),
+                    title: Text(
+                      photo == null ? 'Add a photo' : 'Photo selected',
+                    ),
+                    subtitle: const Text('Photos are kept for 7 days'),
+                    trailing: photo == null
+                        ? const Icon(Icons.add_photo_alternate_outlined)
+                        : IconButton(
+                            tooltip: 'Remove photo',
+                            onPressed: () => setDialogState(() => photo = null),
+                            icon: const Icon(Icons.close),
+                          ),
+                    onTap: () async {
+                      final picked = await ImagePicker().pickImage(
+                        source: ImageSource.gallery,
+                        imageQuality: 82,
+                        maxWidth: 1800,
+                      );
+                      if (picked != null) {
+                        setDialogState(() => photo = picked);
+                      }
+                    },
+                  ),
+                ],
+              ),
             ),
-          ),
           ),
           actions: [
             TextButton(
@@ -3022,14 +3140,16 @@ class _SecretariatDashboardPageState extends State<SecretariatDashboardPage> {
         final path =
             '${client.auth.currentUser!.id}/${DateTime.now().microsecondsSinceEpoch}.$extension';
         final bytes = await photo!.readAsBytes();
-        await client.storage.from('notice-photos').uploadBinary(
-          path,
-          bytes,
-          fileOptions: FileOptions(
-            contentType: 'image/$extension',
-            upsert: false,
-          ),
-        );
+        await client.storage
+            .from('notice-photos')
+            .uploadBinary(
+              path,
+              bytes,
+              fileOptions: FileOptions(
+                contentType: 'image/$extension',
+                upsert: false,
+              ),
+            );
         data['photo_path'] = path;
         data['photo_url'] = client.storage
             .from('notice-photos')
@@ -3113,7 +3233,8 @@ class _SecretariatDashboardPageState extends State<SecretariatDashboardPage> {
             tooltip: 'Sign out',
             onPressed: () async {
               await Supabase.instance.client.auth.signOut();
-              if (mounted) Navigator.of(context).pop();
+              if (!context.mounted) return;
+              Navigator.of(context).pop();
             },
             icon: const Icon(Icons.logout),
           ),
@@ -3218,10 +3339,7 @@ class _SecretariatDashboardPageState extends State<SecretariatDashboardPage> {
                             decoration: const InputDecoration(
                               labelText: 'Filter by section',
                             ),
-                            items: [
-                              'All sections',
-                              ..._sections,
-                            ]
+                            items: ['All sections', ..._sections]
                                 .map(
                                   (section) => DropdownMenuItem(
                                     value: section,
@@ -3256,10 +3374,14 @@ class _SecretariatDashboardPageState extends State<SecretariatDashboardPage> {
                                     (member) => DataRow(
                                       cells: [
                                         DataCell(
-                                          Text(member['name']?.toString() ?? ''),
+                                          Text(
+                                            member['name']?.toString() ?? '',
+                                          ),
                                         ),
                                         DataCell(
-                                          Text(member['phone']?.toString() ?? ''),
+                                          Text(
+                                            member['phone']?.toString() ?? '',
+                                          ),
                                         ),
                                         DataCell(
                                           Text(
@@ -3321,10 +3443,170 @@ class _SecretariatDashboardPageState extends State<SecretariatDashboardPage> {
   }
 }
 
+class _EditProfileDialog extends StatefulWidget {
+  const _EditProfileDialog({
+    required this.name,
+    required this.phone,
+    required this.section,
+    required this.onSaveProfile,
+    required this.messenger,
+  });
+
+  final String name;
+  final String phone;
+  final String section;
+  final Future<void> Function(String name, String phone, String section)
+      onSaveProfile;
+  final ScaffoldMessengerState messenger;
+
+  @override
+  State<_EditProfileDialog> createState() => _EditProfileDialogState();
+}
+
+class _EditProfileDialogState extends State<_EditProfileDialog> {
+  late final TextEditingController _nameController;
+  late final TextEditingController _phoneController;
+  late String _selectedSection;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController(text: widget.name);
+    _phoneController = TextEditingController(text: widget.phone);
+    _selectedSection = widget.section;
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _phoneController.dispose();
+    super.dispose();
+  }
+
+  void _showMessage(String message) {
+    if (widget.messenger.mounted) {
+      widget.messenger.showSnackBar(SnackBar(content: Text(message)));
+    }
+  }
+
+  Future<void> _save() async {
+    final updatedName = _nameController.text.trim();
+    final updatedPhone = _phoneController.text.trim();
+
+    if (updatedName.length < 2) {
+      _showMessage('Please enter your full name.');
+      return;
+    }
+
+    if (!RegExp(r'^0\d{9}$').hasMatch(updatedPhone)) {
+      _showMessage(
+        'Enter a valid 10-digit Zambian number starting with 0.',
+      );
+      return;
+    }
+
+    setState(() => _saving = true);
+
+    try {
+      await widget.onSaveProfile(
+        updatedName,
+        updatedPhone,
+        _selectedSection,
+      );
+
+      if (!mounted) return;
+      Navigator.pop(context, true);
+    } catch (error) {
+      debugPrint('Member profile update failed: $error');
+      if (!mounted) return;
+      setState(() => _saving = false);
+      _showMessage(
+        'Your profile could not be updated. Check your connection and try again.',
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Edit your profile'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _nameController,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Full name',
+                prefixIcon: Icon(Icons.person_outline),
+              ),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _phoneController,
+              keyboardType: TextInputType.phone,
+              maxLength: 10,
+              decoration: const InputDecoration(
+                labelText: 'Mobile number',
+                hintText: '0971234567',
+                prefixIcon: Icon(Icons.phone_outlined),
+                counterText: '',
+              ),
+            ),
+            const SizedBox(height: 14),
+            DropdownButtonFormField<String>(
+              initialValue: _selectedSection,
+              decoration: const InputDecoration(
+                labelText: 'Congregation section',
+                prefixIcon: Icon(Icons.groups_outlined),
+              ),
+              items: _sections
+                  .map(
+                    (item) => DropdownMenuItem(
+                      value: item,
+                      child: Text(item),
+                    ),
+                  )
+                  .toList(),
+              onChanged: _saving
+                  ? null
+                  : (value) {
+                      if (value != null) {
+                        setState(() => _selectedSection = value);
+                      }
+                    },
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _saving ? null : _save,
+          child: _saving
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Save changes'),
+        ),
+      ],
+    );
+  }
+}
+
 class MorePage extends StatelessWidget {
   const MorePage({
     required this.name,
     required this.section,
+    required this.phone,
+    required this.onSaveProfile,
     required this.isDark,
     required this.preferences,
     required this.onToggleTheme,
@@ -3334,6 +3616,9 @@ class MorePage extends StatelessWidget {
 
   final String name;
   final String section;
+  final String phone;
+  final Future<void> Function(String name, String phone, String section)
+      onSaveProfile;
   final bool isDark;
   final SharedPreferences preferences;
   final VoidCallback onToggleTheme;
@@ -3349,7 +3634,9 @@ class MorePage extends StatelessWidget {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('Choose a comfortable reading size for the whole app.'),
+              const Text(
+                'Choose a comfortable reading size for the whole app.',
+              ),
               const SizedBox(height: 18),
               Text(
                 'Aa  Sample reading text',
@@ -3414,6 +3701,29 @@ class MorePage extends StatelessWidget {
     }
   }
 
+  Future<void> _editProfile(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (_) => _EditProfileDialog(
+        name: name,
+        phone: phone,
+        section: section,
+        onSaveProfile: onSaveProfile,
+        messenger: messenger,
+      ),
+    );
+
+    if (result == true && context.mounted) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Your profile has been updated.'),
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return AppPage(
@@ -3426,13 +3736,27 @@ class MorePage extends StatelessWidget {
             child: ListTile(
               leading: const Icon(Icons.account_circle_outlined),
               title: Text(name),
-              subtitle: Text('Section $section'),
+              subtitle: Text('Section $section • $phone'),
+              trailing: const Icon(Icons.edit_outlined),
+              onTap: () => _editProfile(context),
             ),
           ),
           const SizedBox(height: 14),
           Card(
             child: Column(
               children: [
+                ListTile(
+                  leading: const Icon(Icons.auto_stories_rounded),
+                  title: const Text('The Bible'),
+                  subtitle: const Text('Read and download Bible translations'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const BibleHomePage(),
+                    ),
+                  ),
+                ),
+                const Divider(height: 1),
                 SwitchListTile(
                   value: isDark,
                   onChanged: (_) => onToggleTheme(),
@@ -3532,66 +3856,175 @@ class MorePage extends StatelessWidget {
   }
 }
 
+
+
 class EventsPage extends StatelessWidget {
   const EventsPage({super.key});
 
-  static const _events = [
-    (
-      'Sunday worship',
-      'Every Sunday • 06:30 and 09:30',
-      'Come worship, learn and fellowship together.',
-    ),
-    (
-      'Prayer meeting',
-      'Wednesday • 17:30',
-      'A quiet hour of prayer and encouragement.',
-    ),
-    (
-      'Bible study',
-      'Friday • 17:30',
-      'Grow together through Scripture and conversation.',
-    ),
-  ];
-
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+
+    Widget serviceCard({
+      required IconData icon,
+      required String title,
+      required List<(String, String)> sessions,
+    }) {
+      return Card(
+        margin: const EdgeInsets.only(bottom: 14),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  CircleAvatar(
+                    backgroundColor: colors.primaryContainer,
+                    child: Icon(icon, color: colors.onPrimaryContainer),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              ...sessions.map(
+                (session) => Padding(
+                  padding: const EdgeInsets.only(bottom: 9),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          session.$1,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      Text(
+                        session.$2,
+                        style: TextStyle(
+                          color: colors.primary,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    Widget fellowshipCard() {
+      const fellowships = [
+        "Men's Fellowship",
+        "Women's Fellowship",
+        'Youth Fellowship',
+      ];
+
+      return Card(
+        margin: const EdgeInsets.only(bottom: 14),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  CircleAvatar(
+                    backgroundColor: colors.primaryContainer,
+                    child: Icon(
+                      Icons.groups_outlined,
+                      color: colors.onPrimaryContainer,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Fellowships (Vigwirizano)',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              ...fellowships.map(
+                (name) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 7),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.people_outline,
+                        size: 20,
+                        color: colors.primary,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          name,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Church events')),
+      appBar: AppBar(
+        title: const Text('Church events'),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
           Text(
             'Tiyeni limodzi',
-            style: Theme.of(context).textTheme.headlineSmall
-                ?.copyWith(fontWeight: FontWeight.w800),
+            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
           ),
           const SizedBox(height: 6),
           const Text(
-            'Keep an eye on this space for upcoming congregation news.',
+            'Worship and fellowship together as one congregation.',
           ),
-          const SizedBox(height: 18),
-          ..._events.map(
-            (event) => Card(
-              margin: const EdgeInsets.only(bottom: 12),
-              child: ListTile(
-                contentPadding: const EdgeInsets.all(16),
-                leading: CircleAvatar(
-                  backgroundColor: Theme.of(context)
-                      .colorScheme
-                      .primaryContainer,
-                  child: const Icon(Icons.event_available_outlined),
-                ),
-                title: Text(
-                  event.$1,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-                subtitle: Padding(
-                  padding: const EdgeInsets.only(top: 6),
-                  child: Text('${event.$2}\n${event.$3}'),
-                ),
-              ),
-            ),
+          const SizedBox(height: 20),
+          serviceCard(
+            icon: Icons.church_outlined,
+            title: 'Sunday Service',
+            sessions: [
+              ('First Service', '06:30'),
+              ('Second Service', '09:30'),
+            ],
           ),
+          serviceCard(
+            icon: Icons.menu_book_outlined,
+            title: 'Wednesday Service',
+            sessions: [
+              ('Midweek Service', '15:00'),
+            ],
+          ),
+          fellowshipCard(),
         ],
       ),
     );
@@ -3822,9 +4255,8 @@ class _DashboardMetric extends StatelessWidget {
                     value,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w800,
-                    ),
+                    style: Theme.of(context).textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w800),
                   ),
                 ],
               ),

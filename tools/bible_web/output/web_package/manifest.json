@@ -1,0 +1,546 @@
+{
+    "schemaVersion":  1,
+    "translation":  {
+                        "id":  "web",
+                        "name":  "World English Bible",
+                        "shortName":  "WEB",
+                        "languageCode":  "en",
+                        "languageName":  "English",
+                        "version":  "1.0.0",
+                        "description":  "World English Bible for offline reading in RCZ Kanyama.",
+                        "attribution":  "World English Bible (WEB), public domain.",
+                        "license":  "Public domain",
+                        "sourceRepository":  "https://github.com/TehShrike/world-english-bible",
+                        "contentVersion":  "1.0.0"
+                    },
+    "books":  [
+                  {
+                      "id":  "genesis",
+                      "osisId":  "Gen",
+                      "name":  "Genesis",
+                      "englishName":  "Genesis",
+                      "testament":  "old",
+                      "chapterCount":  50
+                  },
+                  {
+                      "id":  "exodus",
+                      "osisId":  "Exod",
+                      "name":  "Exodus",
+                      "englishName":  "Exodus",
+                      "testament":  "old",
+                      "chapterCount":  40
+                  },
+                  {
+                      "id":  "leviticus",
+                      "osisId":  "Lev",
+                      "name":  "Leviticus",
+                      "englishName":  "Leviticus",
+                      "testament":  "old",
+                      "chapterCount":  27
+                  },
+                  {
+                      "id":  "numbers",
+                      "osisId":  "Num",
+                      "name":  "Numbers",
+                      "englishName":  "Numbers",
+                      "testament":  "old",
+                      "chapterCount":  36
+                  },
+                  {
+                      "id":  "deuteronomy",
+                      "osisId":  "Deut",
+                      "name":  "Deuteronomy",
+                      "englishName":  "Deuteronomy",
+                      "testament":  "old",
+                      "chapterCount":  34
+                  },
+                  {
+                      "id":  "joshua",
+                      "osisId":  "Josh",
+                      "name":  "Joshua",
+                      "englishName":  "Joshua",
+                      "testament":  "old",
+                      "chapterCount":  24
+                  },
+                  {
+                      "id":  "judges",
+                      "osisId":  "Judg",
+                      "name":  "Judges",
+                      "englishName":  "Judges",
+                      "testament":  "old",
+                      "chapterCount":  21
+                  },
+                  {
+                      "id":  "ruth",
+                      "osisId":  "Ruth",
+                      "name":  "Ruth",
+                      "englishName":  "Ruth",
+                      "testament":  "old",
+                      "chapterCount":  4
+                  },
+                  {
+                      "id":  "1samuel",
+                      "osisId":  "1Sam",
+                      "name":  "1 Samuel",
+                      "englishName":  "1 Samuel",
+                      "testament":  "old",
+                      "chapterCount":  31
+                  },
+                  {
+                      "id":  "2samuel",
+                      "osisId":  "2Sam",
+                      "name":  "2 Samuel",
+                      "englishName":  "2 Samuel",
+                      "testament":  "old",
+                      "chapterCount":  24
+                  },
+                  {
+                      "id":  "1kings",
+                      "osisId":  "1Kgs",
+                      "name":  "1 Kings",
+                      "englishName":  "1 Kings",
+                      "testament":  "old",
+                      "chapterCount":  22
+                  },
+                  {
+                      "id":  "2kings",
+                      "osisId":  "2Kgs",
+                      "name":  "2 Kings",
+                      "englishName":  "2 Kings",
+                      "testament":  "old",
+                      "chapterCount":  25
+                  },
+                  {
+                      "id":  "1chronicles",
+                      "osisId":  "1Chr",
+                      "name":  "1 Chronicles",
+                      "englishName":  "1 Chronicles",
+                      "testament":  "old",
+                      "chapterCount":  29
+                  },
+                  {
+                      "id":  "2chronicles",
+                      "osisId":  "2Chr",
+                      "name":  "2 Chronicles",
+                      "englishName":  "2 Chronicles",
+                      "testament":  "old",
+                      "chapterCount":  36
+                  },
+                  {
+                      "id":  "ezra",
+                      "osisId":  "Ezra",
+                      "name":  "Ezra",
+                      "englishName":  "Ezra",
+                      "testament":  "old",
+                      "chapterCount":  10
+                  },
+                  {
+                      "id":  "nehemiah",
+                      "osisId":  "Neh",
+                      "name":  "Nehemiah",
+                      "englishName":  "Nehemiah",
+                      "testament":  "old",
+                      "chapterCount":  13
+                  },
+                  {
+                      "id":  "esther",
+                      "osisId":  "Esth",
+                      "name":  "Esther",
+                      "englishName":  "Esther",
+                      "testament":  "old",
+                      "chapterCount":  10
+                  },
+                  {
+                      "id":  "job",
+                      "osisId":  "Job",
+                      "name":  "Job",
+                      "englishName":  "Job",
+                      "testament":  "old",
+                      "chapterCount":  42
+                  },
+                  {
+                      "id":  "psalms",
+                      "osisId":  "Ps",
+                      "name":  "Psalms",
+                      "englishName":  "Psalms",
+                      "testament":  "old",
+                      "chapterCount":  150
+                  },
+                  {
+                      "id":  "proverbs",
+                      "osisId":  "Prov",
+                      "name":  "Proverbs",
+                      "englishName":  "Proverbs",
+                      "testament":  "old",
+                      "chapterCount":  31
+                  },
+                  {
+                      "id":  "ecclesiastes",
+                      "osisId":  "Eccl",
+                      "name":  "Ecclesiastes",
+                      "englishName":  "Ecclesiastes",
+                      "testament":  "old",
+                      "chapterCount":  12
+                  },
+                  {
+                      "id":  "songofsolomon",
+                      "osisId":  "Song",
+                      "name":  "Song of Solomon",
+                      "englishName":  "Song of Solomon",
+                      "testament":  "old",
+                      "chapterCount":  8
+                  },
+                  {
+                      "id":  "isaiah",
+                      "osisId":  "Isa",
+                      "name":  "Isaiah",
+                      "englishName":  "Isaiah",
+                      "testament":  "old",
+                      "chapterCount":  66
+                  },
+                  {
+                      "id":  "jeremiah",
+                      "osisId":  "Jer",
+                      "name":  "Jeremiah",
+                      "englishName":  "Jeremiah",
+                      "testament":  "old",
+                      "chapterCount":  52
+                  },
+                  {
+                      "id":  "lamentations",
+                      "osisId":  "Lam",
+                      "name":  "Lamentations",
+                      "englishName":  "Lamentations",
+                      "testament":  "old",
+                      "chapterCount":  5
+                  },
+                  {
+                      "id":  "ezekiel",
+                      "osisId":  "Ezek",
+                      "name":  "Ezekiel",
+                      "englishName":  "Ezekiel",
+                      "testament":  "old",
+                      "chapterCount":  48
+                  },
+                  {
+                      "id":  "daniel",
+                      "osisId":  "Dan",
+                      "name":  "Daniel",
+                      "englishName":  "Daniel",
+                      "testament":  "old",
+                      "chapterCount":  12
+                  },
+                  {
+                      "id":  "hosea",
+                      "osisId":  "Hos",
+                      "name":  "Hosea",
+                      "englishName":  "Hosea",
+                      "testament":  "old",
+                      "chapterCount":  14
+                  },
+                  {
+                      "id":  "joel",
+                      "osisId":  "Joel",
+                      "name":  "Joel",
+                      "englishName":  "Joel",
+                      "testament":  "old",
+                      "chapterCount":  3
+                  },
+                  {
+                      "id":  "amos",
+                      "osisId":  "Amos",
+                      "name":  "Amos",
+                      "englishName":  "Amos",
+                      "testament":  "old",
+                      "chapterCount":  9
+                  },
+                  {
+                      "id":  "obadiah",
+                      "osisId":  "Obad",
+                      "name":  "Obadiah",
+                      "englishName":  "Obadiah",
+                      "testament":  "old",
+                      "chapterCount":  1
+                  },
+                  {
+                      "id":  "jonah",
+                      "osisId":  "Jonah",
+                      "name":  "Jonah",
+                      "englishName":  "Jonah",
+                      "testament":  "old",
+                      "chapterCount":  4
+                  },
+                  {
+                      "id":  "micah",
+                      "osisId":  "Mic",
+                      "name":  "Micah",
+                      "englishName":  "Micah",
+                      "testament":  "old",
+                      "chapterCount":  7
+                  },
+                  {
+                      "id":  "nahum",
+                      "osisId":  "Nah",
+                      "name":  "Nahum",
+                      "englishName":  "Nahum",
+                      "testament":  "old",
+                      "chapterCount":  3
+                  },
+                  {
+                      "id":  "habakkuk",
+                      "osisId":  "Hab",
+                      "name":  "Habakkuk",
+                      "englishName":  "Habakkuk",
+                      "testament":  "old",
+                      "chapterCount":  3
+                  },
+                  {
+                      "id":  "zephaniah",
+                      "osisId":  "Zeph",
+                      "name":  "Zephaniah",
+                      "englishName":  "Zephaniah",
+                      "testament":  "old",
+                      "chapterCount":  3
+                  },
+                  {
+                      "id":  "haggai",
+                      "osisId":  "Hag",
+                      "name":  "Haggai",
+                      "englishName":  "Haggai",
+                      "testament":  "old",
+                      "chapterCount":  2
+                  },
+                  {
+                      "id":  "zechariah",
+                      "osisId":  "Zech",
+                      "name":  "Zechariah",
+                      "englishName":  "Zechariah",
+                      "testament":  "old",
+                      "chapterCount":  14
+                  },
+                  {
+                      "id":  "malachi",
+                      "osisId":  "Mal",
+                      "name":  "Malachi",
+                      "englishName":  "Malachi",
+                      "testament":  "old",
+                      "chapterCount":  4
+                  },
+                  {
+                      "id":  "matthew",
+                      "osisId":  "Matt",
+                      "name":  "Matthew",
+                      "englishName":  "Matthew",
+                      "testament":  "new",
+                      "chapterCount":  28
+                  },
+                  {
+                      "id":  "mark",
+                      "osisId":  "Mark",
+                      "name":  "Mark",
+                      "englishName":  "Mark",
+                      "testament":  "new",
+                      "chapterCount":  16
+                  },
+                  {
+                      "id":  "luke",
+                      "osisId":  "Luke",
+                      "name":  "Luke",
+                      "englishName":  "Luke",
+                      "testament":  "new",
+                      "chapterCount":  24
+                  },
+                  {
+                      "id":  "john",
+                      "osisId":  "John",
+                      "name":  "John",
+                      "englishName":  "John",
+                      "testament":  "new",
+                      "chapterCount":  21
+                  },
+                  {
+                      "id":  "acts",
+                      "osisId":  "Acts",
+                      "name":  "Acts",
+                      "englishName":  "Acts",
+                      "testament":  "new",
+                      "chapterCount":  28
+                  },
+                  {
+                      "id":  "romans",
+                      "osisId":  "Rom",
+                      "name":  "Romans",
+                      "englishName":  "Romans",
+                      "testament":  "new",
+                      "chapterCount":  16
+                  },
+                  {
+                      "id":  "1corinthians",
+                      "osisId":  "1Cor",
+                      "name":  "1 Corinthians",
+                      "englishName":  "1 Corinthians",
+                      "testament":  "new",
+                      "chapterCount":  16
+                  },
+                  {
+                      "id":  "2corinthians",
+                      "osisId":  "2Cor",
+                      "name":  "2 Corinthians",
+                      "englishName":  "2 Corinthians",
+                      "testament":  "new",
+                      "chapterCount":  13
+                  },
+                  {
+                      "id":  "galatians",
+                      "osisId":  "Gal",
+                      "name":  "Galatians",
+                      "englishName":  "Galatians",
+                      "testament":  "new",
+                      "chapterCount":  6
+                  },
+                  {
+                      "id":  "ephesians",
+                      "osisId":  "Eph",
+                      "name":  "Ephesians",
+                      "englishName":  "Ephesians",
+                      "testament":  "new",
+                      "chapterCount":  6
+                  },
+                  {
+                      "id":  "philippians",
+                      "osisId":  "Phil",
+                      "name":  "Philippians",
+                      "englishName":  "Philippians",
+                      "testament":  "new",
+                      "chapterCount":  4
+                  },
+                  {
+                      "id":  "colossians",
+                      "osisId":  "Col",
+                      "name":  "Colossians",
+                      "englishName":  "Colossians",
+                      "testament":  "new",
+                      "chapterCount":  4
+                  },
+                  {
+                      "id":  "1thessalonians",
+                      "osisId":  "1Thess",
+                      "name":  "1 Thessalonians",
+                      "englishName":  "1 Thessalonians",
+                      "testament":  "new",
+                      "chapterCount":  5
+                  },
+                  {
+                      "id":  "2thessalonians",
+                      "osisId":  "2Thess",
+                      "name":  "2 Thessalonians",
+                      "englishName":  "2 Thessalonians",
+                      "testament":  "new",
+                      "chapterCount":  3
+                  },
+                  {
+                      "id":  "1timothy",
+                      "osisId":  "1Tim",
+                      "name":  "1 Timothy",
+                      "englishName":  "1 Timothy",
+                      "testament":  "new",
+                      "chapterCount":  6
+                  },
+                  {
+                      "id":  "2timothy",
+                      "osisId":  "2Tim",
+                      "name":  "2 Timothy",
+                      "englishName":  "2 Timothy",
+                      "testament":  "new",
+                      "chapterCount":  4
+                  },
+                  {
+                      "id":  "titus",
+                      "osisId":  "Titus",
+                      "name":  "Titus",
+                      "englishName":  "Titus",
+                      "testament":  "new",
+                      "chapterCount":  3
+                  },
+                  {
+                      "id":  "philemon",
+                      "osisId":  "Phlm",
+                      "name":  "Philemon",
+                      "englishName":  "Philemon",
+                      "testament":  "new",
+                      "chapterCount":  1
+                  },
+                  {
+                      "id":  "hebrews",
+                      "osisId":  "Heb",
+                      "name":  "Hebrews",
+                      "englishName":  "Hebrews",
+                      "testament":  "new",
+                      "chapterCount":  13
+                  },
+                  {
+                      "id":  "james",
+                      "osisId":  "Jas",
+                      "name":  "James",
+                      "englishName":  "James",
+                      "testament":  "new",
+                      "chapterCount":  5
+                  },
+                  {
+                      "id":  "1peter",
+                      "osisId":  "1Pet",
+                      "name":  "1 Peter",
+                      "englishName":  "1 Peter",
+                      "testament":  "new",
+                      "chapterCount":  5
+                  },
+                  {
+                      "id":  "2peter",
+                      "osisId":  "2Pet",
+                      "name":  "2 Peter",
+                      "englishName":  "2 Peter",
+                      "testament":  "new",
+                      "chapterCount":  3
+                  },
+                  {
+                      "id":  "1john",
+                      "osisId":  "1John",
+                      "name":  "1 John",
+                      "englishName":  "1 John",
+                      "testament":  "new",
+                      "chapterCount":  5
+                  },
+                  {
+                      "id":  "2john",
+                      "osisId":  "2John",
+                      "name":  "2 John",
+                      "englishName":  "2 John",
+                      "testament":  "new",
+                      "chapterCount":  1
+                  },
+                  {
+                      "id":  "3john",
+                      "osisId":  "3John",
+                      "name":  "3 John",
+                      "englishName":  "3 John",
+                      "testament":  "new",
+                      "chapterCount":  1
+                  },
+                  {
+                      "id":  "jude",
+                      "osisId":  "Jude",
+                      "name":  "Jude",
+                      "englishName":  "Jude",
+                      "testament":  "new",
+                      "chapterCount":  1
+                  },
+                  {
+                      "id":  "revelation",
+                      "osisId":  "Rev",
+                      "name":  "Revelation",
+                      "englishName":  "Revelation",
+                      "testament":  "new",
+                      "chapterCount":  22
+                  }
+              ]
+}

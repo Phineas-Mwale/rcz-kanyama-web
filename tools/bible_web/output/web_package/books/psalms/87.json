@@ -1,0 +1,34 @@
+{
+    "bookId":  "psalms",
+    "chapter":  87,
+    "verses":  [
+                   {
+                       "number":  1,
+                       "text":  "His foundation is in the holy mountains."
+                   },
+                   {
+                       "number":  2,
+                       "text":  "Yahweh loves the gates of Zion more than all the dwellings of Jacob."
+                   },
+                   {
+                       "number":  3,
+                       "text":  "Glorious things are spoken about you, city of God."
+                   },
+                   {
+                       "number":  4,
+                       "text":  "I will record Rahab and Babylon among those who acknowledge me. Behold, Philistia, Tyre, and also Ethiopia: “This one was born there.”"
+                   },
+                   {
+                       "number":  5,
+                       "text":  "Yes, of Zion it will be said, “This one and that one was born in her;” the Most High himself will establish her."
+                   },
+                   {
+                       "number":  6,
+                       "text":  "Yahweh will count, when he writes up the peoples, “This one was born there.”"
+                   },
+                   {
+                       "number":  7,
+                       "text":  "Those who sing as well as those who dance say, “All my springs are in you.”"
+                   }
+               ]
+}

@@ -47,3 +47,24 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+.vercel
+.env*
+
+# RCZ Kanyama release files
+/release/
+rcz_web_diagnostics.txt
+/tatus --short
+*.backup-*
+/android/icon_splash_backup_*/
+
+
+# Local release files
+/release/
+/build/
+rcz_web_diagnostics.txt
+tatus --short
+
+# Temporary backups
+/lib/main.dart.backup-*
+/android/icon_splash_backup_*/
+
