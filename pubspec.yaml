@@ -30,6 +30,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
@@ -42,12 +44,16 @@ dependencies:
   uuid: ^4.6.0
   url_launcher: ^6.3.3
   youtube_player_iframe: ^5.2.1
+  webview_flutter: ^4.10.0
+  webview_flutter_android: ^4.0.0
   archive: ^3.6.1
   crypto: ^3.0.8
   path_provider: ^2.1.6
   sembast: ^3.10.1
   sembast_web: ^2.4.7
   path: ^1.9.1
+  connectivity_plus: ^7.3.2
+  flutter_quill: ^11.6.0
 
 dev_dependencies:
   flutter_test:
@@ -78,6 +84,14 @@ flutter:
     - assets/logo_white.png
     - assets/chichewa_hymns.json
     - assets/english_hymns.json
+
+  fonts:
+    - family: Manrope
+      fonts:
+        - asset: assets/fonts/Manrope-Variable.ttf
+    - family: SourceSerif4
+      fonts:
+        - asset: assets/fonts/SourceSerif4-Variable.ttf
 
   # To add assets to your application, add an assets section, like this:
   # assets:

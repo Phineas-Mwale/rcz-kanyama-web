@@ -68,3 +68,17 @@ tatus --short
 /lib/main.dart.backup-*
 /android/icon_splash_backup_*/
 
+
+# Android release signing secrets
+/android/key.properties
+*.jks
+*.keystore
+
+# Local backups and diagnostic logs
+*.backup_*
+*.backup-*
+*.before_*.bak
+sermon_*.txt
+
+# Local administrative scripts
+/reset_accounts.js

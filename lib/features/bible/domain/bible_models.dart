@@ -63,13 +63,13 @@ class BibleBook {
   final int chapterCount;
 
   factory BibleBook.fromJson(Map<String, dynamic> json) => BibleBook(
-        id: json['id'] as String,
-        osisId: json['osisId'] as String,
-        name: json['name'] as String,
-        englishName: json['englishName'] as String,
-        testament: json['testament'] as String,
-        chapterCount: json['chapterCount'] as int,
-      );
+    id: json['id'] as String,
+    osisId: json['osisId'] as String,
+    name: json['name'] as String,
+    englishName: json['englishName'] as String,
+    testament: json['testament'] as String,
+    chapterCount: json['chapterCount'] as int,
+  );
 }
 
 class BibleVerse {
@@ -78,10 +78,8 @@ class BibleVerse {
   final int number;
   final String text;
 
-  factory BibleVerse.fromJson(Map<String, dynamic> json) => BibleVerse(
-        number: json['number'] as int,
-        text: json['text'] as String,
-      );
+  factory BibleVerse.fromJson(Map<String, dynamic> json) =>
+      BibleVerse(number: json['number'] as int, text: json['text'] as String);
 }
 
 class BibleChapter {
@@ -96,10 +94,10 @@ class BibleChapter {
   final List<BibleVerse> verses;
 
   factory BibleChapter.fromJson(Map<String, dynamic> json) => BibleChapter(
-        bookId: json['bookId'] as String,
-        chapter: json['chapter'] as int,
-        verses: (json['verses'] as List<dynamic>)
-            .map((item) => BibleVerse.fromJson(item as Map<String, dynamic>))
-            .toList(growable: false),
-      );
+    bookId: json['bookId'] as String,
+    chapter: json['chapter'] as int,
+    verses: (json['verses'] as List<dynamic>)
+        .map((item) => BibleVerse.fromJson(item as Map<String, dynamic>))
+        .toList(growable: false),
+  );
 }

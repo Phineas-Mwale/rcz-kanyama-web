@@ -2,7 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:excel/excel.dart' hide Border, TextSpan;
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter_quill/flutter_quill.dart'
+    show FlutterQuillLocalizations;
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -10,12 +14,23 @@ import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:youtube_player_iframe/youtube_player_iframe.dart';
 
 import 'supabase_config.dart';
+import 'features/bible/data/bible_download_manager.dart';
 import 'features/bible/presentation/bible_home_page.dart';
+import 'features/congregation_history/presentation/congregation_history_page.dart';
+import 'features/media_team/presentation/media_team_access_page.dart';
+import 'features/admin/presentation/admin_dashboard_page.dart';
+import 'features/notices/notice_read_service.dart';
+import 'features/notes/data/notes_repository.dart';
+import 'features/notes/domain/note.dart';
+import 'features/notes/presentation/note_editor_page.dart';
+import 'features/notes/presentation/note_view_page.dart';
+import 'theme/app_theme.dart';
 
-const _brandBlue = Color(0xFF34358F);
 const _sections = [
   'A1',
   'A2',
@@ -70,16 +85,24 @@ class _RczKanyamaAppState extends State<RczKanyamaApp> {
     if (_hasProfile) {
       unawaited(_syncMember(_name!, _phone!, _section!));
     }
+    unawaited(_prepareBibleDownloads());
+  }
+
+  Future<void> _prepareBibleDownloads() async {
+    try {
+      final manager = await BibleDownloadManager.create(
+        client: Supabase.instance.client,
+        preferences: widget.preferences,
+      );
+      await manager.startIfNeeded();
+    } catch (error) {
+      debugPrint('Bible offline preparation could not start: $error');
+    }
   }
 
   Future<void> _saveProfile(String name, String phone, String section) async {
     // Save to the device only after Supabase confirms the profile update.
-    await _syncMember(
-      name,
-      phone,
-      section,
-      throwOnFailure: true,
-    );
+    await _syncMember(name, phone, section, throwOnFailure: true);
 
     await widget.preferences.setString('member_name', name);
     await widget.preferences.setString('member_phone', phone);
@@ -150,20 +173,18 @@ class _RczKanyamaAppState extends State<RczKanyamaApp> {
 
   @override
   Widget build(BuildContext context) {
-    final lightScheme = ColorScheme.fromSeed(
-      seedColor: _brandBlue,
-      brightness: Brightness.light,
-    );
-    final darkScheme = ColorScheme.fromSeed(
-      seedColor: _brandBlue,
-      brightness: Brightness.dark,
-    );
     return MaterialApp(
       title: 'RCZ - Kanyama',
       debugShowCheckedModeBanner: false,
       themeMode: _isDark ? ThemeMode.dark : ThemeMode.light,
-      theme: _theme(lightScheme),
-      darkTheme: _theme(darkScheme),
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+        FlutterQuillLocalizations.delegate,
+      ],
       builder: (context, child) => MediaQuery(
         data: MediaQuery.of(context)
             .copyWith(textScaler: TextScaler.linear(_textScale)),
@@ -183,54 +204,13 @@ class _RczKanyamaAppState extends State<RczKanyamaApp> {
           : OnboardingScreen(onComplete: _saveProfile),
     );
   }
-
-  ThemeData _theme(ColorScheme colors) {
-    return ThemeData(
-      colorScheme: colors,
-      useMaterial3: true,
-      scaffoldBackgroundColor: colors.surface,
-      cardTheme: CardThemeData(
-        elevation: 0,
-        color: colors.surfaceContainerLow,
-        margin: EdgeInsets.zero,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-      ),
-      appBarTheme: AppBarTheme(
-        backgroundColor: colors.surface,
-        elevation: 0,
-        centerTitle: false,
-      ),
-      navigationBarTheme: NavigationBarThemeData(
-        height: 70,
-        indicatorShape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
-      ),
-      inputDecorationTheme: InputDecorationTheme(
-        filled: true,
-        fillColor: colors.surfaceContainerHighest.withValues(alpha: .45),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
-          borderSide: BorderSide.none,
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
-          borderSide: BorderSide.none,
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
-          borderSide: BorderSide(color: colors.primary, width: 1.5),
-        ),
-      ),
-    );
-  }
 }
 
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({required this.onComplete, super.key});
 
   final Future<void> Function(String name, String phone, String section)
-      onComplete;
+  onComplete;
 
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();
@@ -294,194 +274,319 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       ..showSnackBar(SnackBar(content: Text(message)));
   }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget _softGlow(Color color) {
+    return Container(
+      width: 320,
+      height: 320,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: RadialGradient(colors: [color, color.withValues(alpha: 0)]),
+      ),
+    );
+  }
+
+  Widget _stepField(BuildContext context) {
     final isNameStep = _step == 0;
     final isPhoneStep = _step == 1;
-    return Scaffold(
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(28),
-            child: TweenAnimationBuilder<double>(
-              tween: Tween(begin: 0.94, end: 1),
-              duration: const Duration(milliseconds: 700),
-              curve: Curves.easeOutCubic,
-              builder: (context, scale, child) => Opacity(
-                opacity: ((scale - 0.94) / 0.06).clamp(0, 1),
-                child: Transform.scale(scale: scale, child: child),
-              ),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 520),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
+    if (isNameStep) {
+      return TextField(
+        controller: _nameController,
+        textCapitalization: TextCapitalization.words,
+        textInputAction: TextInputAction.done,
+        onSubmitted: (_) => _next(),
+        decoration: const InputDecoration(
+          labelText: 'Your name',
+          hintText: 'e.g. Chanda Mwale',
+          prefixIcon: Icon(Icons.person_outline_rounded),
+        ),
+      );
+    }
+    if (isPhoneStep) {
+      return TextField(
+        controller: _phoneController,
+        keyboardType: TextInputType.phone,
+        maxLength: 10,
+        decoration: const InputDecoration(
+          labelText: 'Mobile number',
+          hintText: '0971234567',
+          prefixIcon: Icon(Icons.phone_outlined),
+          counterText: '',
+        ),
+      );
+    }
+    final colors = Theme.of(context).colorScheme;
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 3,
+        mainAxisSpacing: 10,
+        crossAxisSpacing: 10,
+        childAspectRatio: 1.75,
+      ),
+      itemCount: _sections.length,
+      itemBuilder: (_, index) {
+        final section = _sections[index];
+        final selected = _section == section;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          decoration: BoxDecoration(
+            color: selected ? colors.primary : colors.surface,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: selected ? colors.primary : colors.outlineVariant,
+              width: selected ? 1.6 : 1,
+            ),
+            boxShadow: selected
+                ? [
+                    BoxShadow(
+                      color: colors.primary.withValues(alpha: .22),
+                      blurRadius: 14,
+                      offset: const Offset(0, 5),
+                    ),
+                  ]
+                : const [],
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: () => setState(() => _section = section),
+              child: Center(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Image.asset(
-                      'assets/logo1.png',
-                      height: 150,
-                      errorBuilder: (_, _, _) => const Icon(
-                        Icons.church,
-                        size: 120,
-                        color: _brandBlue,
+                    if (selected) ...[
+                      Icon(
+                        Icons.check_rounded,
+                        size: 16,
+                        color: colors.onPrimary,
                       ),
-                    ),
-                    const SizedBox(height: 22),
+                      const SizedBox(width: 4),
+                    ],
                     Text(
-                      'RCZ - Kanyama',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.headlineSmall
-                          ?.copyWith(
-                            fontWeight: FontWeight.w800,
-                            color: _brandBlue,
-                          ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Kuunika M’mdima',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 50),
-                    Text(
-                      isNameStep
-                          ? 'Welcome home'
-                          : isPhoneStep
-                          ? 'Stay connected'
-                          : 'Find your section',
-                      style: Theme.of(context).textTheme.headlineMedium
-                          ?.copyWith(fontWeight: FontWeight.w700),
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      isNameStep
-                          ? 'What should we call you?'
-                          : isPhoneStep
-                          ? 'Add your Zambian mobile number'
-                          : 'Which section do you worship with?',
-                    ),
-                    const SizedBox(height: 24),
-                    if (isNameStep)
-                      TextField(
-                        controller: _nameController,
-                        textCapitalization: TextCapitalization.words,
-                        textInputAction: TextInputAction.done,
-                        onSubmitted: (_) => _next(),
-                        decoration: const InputDecoration(
-                          labelText: 'Your name',
-                          prefixIcon: Icon(Icons.person_outline),
-                        ),
-                      )
-                    else if (isPhoneStep)
-                      TextField(
-                        controller: _phoneController,
-                        keyboardType: TextInputType.phone,
-                        maxLength: 10,
-                        decoration: const InputDecoration(
-                          labelText: 'Mobile number',
-                          hintText: '0971234567',
-                          prefixIcon: Icon(Icons.phone_outlined),
-                          counterText: '',
-                        ),
-                      )
-                    else
-                      GridView.builder(
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(),
-                        gridDelegate:
-                            const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 3,
-                              mainAxisSpacing: 10,
-                              crossAxisSpacing: 10,
-                              childAspectRatio: 1.65,
-                            ),
-                        itemCount: _sections.length,
-                        itemBuilder: (_, index) {
-                          final section = _sections[index];
-                          final selected = _section == section;
-                          final colors = Theme.of(context).colorScheme;
-                          return AnimatedContainer(
-                            duration: const Duration(milliseconds: 180),
-                            curve: Curves.easeOut,
-                            decoration: BoxDecoration(
-                              color: selected
-                                  ? colors.primary
-                                  : colors.surfaceContainerLow,
-                              borderRadius: BorderRadius.circular(15),
-                              border: Border.all(
-                                color: selected
-                                    ? colors.primary
-                                    : colors.outlineVariant,
-                                width: selected ? 1.6 : 1,
-                              ),
-                              boxShadow: selected
-                                  ? [
-                                      BoxShadow(
-                                        color: colors.primary.withValues(
-                                          alpha: .16,
-                                        ),
-                                        blurRadius: 12,
-                                        offset: const Offset(0, 4),
-                                      ),
-                                    ]
-                                  : const [],
-                            ),
-                            child: Material(
-                              color: Colors.transparent,
-                              child: InkWell(
-                                borderRadius: BorderRadius.circular(15),
-                                onTap: () => setState(() => _section = section),
-                                child: Center(
-                                  child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      if (selected) ...[
-                                        const Icon(
-                                          Icons.check_circle,
-                                          size: 16,
-                                          color: Colors.white,
-                                        ),
-                                        const SizedBox(width: 5),
-                                      ],
-                                      Text(
-                                        section,
-                                        style: TextStyle(
-                                          color: selected
-                                              ? Colors.white
-                                              : colors.onSurface,
-                                          fontWeight: FontWeight.w800,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          );
-                        },
+                      section,
+                      style: TextStyle(
+                        color: selected ? colors.onPrimary : colors.onSurface,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: .3,
                       ),
-                    const SizedBox(height: 28),
-                    FilledButton(
-                      onPressed: _saving ? null : _next,
-                      child: _saving
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : Text(isNameStep ? 'Continue' : 'Enter the app'),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      'This helps us welcome you personally. You can change these details later.',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ],
                 ),
               ),
             ),
           ),
-        ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final isNameStep = _step == 0;
+    final isPhoneStep = _step == 1;
+    final heading = isNameStep
+        ? 'Welcome home'
+        : isPhoneStep
+        ? 'Stay connected'
+        : 'Find your section';
+    final description = isNameStep
+        ? 'Tell us how you would like to be greeted.'
+        : isPhoneStep
+        ? 'Add your Zambian mobile number so the church can reach you.'
+        : 'Choose the section you worship with each Sunday.';
+
+    return Scaffold(
+      body: Stack(
+        children: [
+          Positioned(
+            top: -140,
+            right: -100,
+            child: _softGlow(colors.primary.withValues(alpha: .10)),
+          ),
+          Positioned(
+            bottom: -160,
+            left: -120,
+            child: _softGlow(AppColors.gold.withValues(alpha: .14)),
+          ),
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(24, 26, 24, 34),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 520),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            width: 54,
+                            height: 54,
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: AppColors.navy,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: colors.outlineVariant),
+                              boxShadow: AppDecor.softShadow(context),
+                            ),
+                            child: Image.asset(
+                              'assets/logo_white.png',
+                              errorBuilder: (_, _, _) => Icon(
+                                Icons.church_rounded,
+                                color: colors.primary,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'RCZ KANYAMA',
+                                  style: Theme.of(context).textTheme.labelSmall
+                                      ?.copyWith(
+                                        color: colors.primary,
+                                        letterSpacing: 2.2,
+                                      ),
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  'Reformed Church in Zambia',
+                                  style: Theme.of(context).textTheme.bodySmall
+                                      ?.copyWith(
+                                        color: colors.onSurfaceVariant,
+                                      ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 38),
+                      Row(
+                        children: List.generate(3, (index) {
+                          final active = index <= _step;
+                          return Expanded(
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 240),
+                              height: 5,
+                              margin: EdgeInsets.only(
+                                right: index == 2 ? 0 : 7,
+                              ),
+                              decoration: BoxDecoration(
+                                color: active
+                                    ? colors.primary
+                                    : colors.outlineVariant,
+                                borderRadius: BorderRadius.circular(99),
+                              ),
+                            ),
+                          );
+                        }),
+                      ),
+                      const SizedBox(height: 30),
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 280),
+                        switchInCurve: Curves.easeOutCubic,
+                        switchOutCurve: Curves.easeInCubic,
+                        transitionBuilder: (child, animation) {
+                          final offset = Tween<Offset>(
+                            begin: const Offset(0, .04),
+                            end: Offset.zero,
+                          ).animate(animation);
+                          return FadeTransition(
+                            opacity: animation,
+                            child: SlideTransition(
+                              position: offset,
+                              child: child,
+                            ),
+                          );
+                        },
+                        child: Column(
+                          key: ValueKey(_step),
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(
+                              'STEP ${_step + 1} OF 3',
+                              style: Theme.of(context).textTheme.labelSmall
+                                  ?.copyWith(
+                                    color: colors.secondary,
+                                    letterSpacing: 1.8,
+                                  ),
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              heading,
+                              style: Theme.of(context).textTheme.headlineMedium,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              description,
+                              style: Theme.of(context).textTheme.bodyMedium
+                                  ?.copyWith(color: colors.onSurfaceVariant),
+                            ),
+                            const SizedBox(height: 24),
+                            _stepField(context),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 30),
+                      FilledButton(
+                        onPressed: _saving ? null : _next,
+                        child: _saving
+                            ? SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: colors.onPrimary,
+                                ),
+                              )
+                            : Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Text(
+                                    _step == 2 ? 'Enter the app' : 'Continue',
+                                  ),
+                                  const SizedBox(width: 8),
+                                  const Icon(
+                                    Icons.arrow_forward_rounded,
+                                    size: 18,
+                                  ),
+                                ],
+                              ),
+                      ),
+                      const SizedBox(height: 18),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.lock_outline_rounded,
+                            size: 14,
+                            color: colors.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              'Your details stay private and can be updated later.',
+                              textAlign: TextAlign.center,
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(color: colors.onSurfaceVariant),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -504,7 +609,7 @@ class MainShell extends StatefulWidget {
   final String section;
   final String phone;
   final Future<void> Function(String name, String phone, String section)
-      onSaveProfile;
+  onSaveProfile;
   final SharedPreferences preferences;
   final bool isDark;
   final VoidCallback onToggleTheme;
@@ -514,25 +619,50 @@ class MainShell extends StatefulWidget {
   State<MainShell> createState() => _MainShellState();
 }
 
-class _MainShellState extends State<MainShell> {
+class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   int _index = 0;
   int _noticeCount = 0;
-  Timer? _noticeTimer;
+  RealtimeChannel? _noticesChannel;
+  late final NoticeReadService _noticeReads = NoticeReadService(
+    widget.preferences,
+  );
 
   @override
   void initState() {
     super.initState();
-    _refreshNoticeCount();
-    _noticeTimer = Timer.periodic(
-      const Duration(seconds: 30),
-      (_) => _refreshNoticeCount(),
-    );
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(_initialiseNotices());
+    _noticesChannel = Supabase.instance.client
+        .channel('notice-count')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'church_notices',
+          callback: (_) => unawaited(_refreshNoticeCount()),
+        )
+        .subscribe();
+  }
+
+  Future<void> _initialiseNotices() async {
+    await _noticeReads.mergeRemoteReceipts();
+    await _refreshNoticeCount();
   }
 
   @override
   void dispose() {
-    _noticeTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    final channel = _noticesChannel;
+    if (channel != null) {
+      Supabase.instance.client.removeChannel(channel);
+    }
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_refreshNoticeCount());
+    }
   }
 
   Future<void> _refreshNoticeCount() async {
@@ -541,7 +671,10 @@ class _MainShellState extends State<MainShell> {
           .from('church_notices')
           .select('id')
           .eq('is_published', true);
-      if (mounted) setState(() => _noticeCount = rows.length);
+      final unread = _noticeReads.unreadCount(rows.map((row) => row['id']));
+      if (mounted && unread != _noticeCount) {
+        setState(() => _noticeCount = unread);
+      }
     } catch (error) {
       debugPrint('Notice badge refresh failed: $error');
     }
@@ -554,11 +687,19 @@ class _MainShellState extends State<MainShell> {
         name: widget.name,
         section: widget.section,
         onOpenPage: (index) => setState(() => _index = index),
+        noticeCount: _noticeCount,
       ),
       SermonsPage(preferences: widget.preferences),
       HymnsPage(preferences: widget.preferences),
       NotesPage(preferences: widget.preferences),
-      const NoticesPage(),
+      NoticesPage(
+        readService: _noticeReads,
+        onUnreadChanged: (count) {
+          if (mounted && count != _noticeCount) {
+            setState(() => _noticeCount = count);
+          }
+        },
+      ),
       MorePage(
         name: widget.name,
         section: widget.section,
@@ -572,37 +713,167 @@ class _MainShellState extends State<MainShell> {
     ];
     return Scaffold(
       body: IndexedStack(index: _index, children: pages),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: (value) => setState(() => _index = value),
-        destinations: [
-          NavigationDestination(icon: Icon(Icons.home_outlined), label: 'Home'),
-          NavigationDestination(
-            icon: Icon(Icons.play_circle_outline),
-            label: 'Sermons',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.menu_book_outlined),
-            label: 'Nyimbo',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.edit_note_outlined),
-            label: 'Notes',
-          ),
-          NavigationDestination(
-            icon: _noticeCount == 0
-                ? Icon(Icons.campaign_outlined)
-                : Badge(
-                    label: Text(_noticeCount > 99 ? '99+' : '$_noticeCount'),
-                    child: const Icon(Icons.campaign_outlined),
-                  ),
-            label: 'Notices',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.grid_view_rounded),
-            label: 'More',
+      bottomNavigationBar: _AppNavigationBar(
+        index: _index,
+        noticeCount: _noticeCount,
+        onSelected: (value) => setState(() => _index = value),
+      ),
+    );
+  }
+}
+
+class _AppNavigationBar extends StatelessWidget {
+  const _AppNavigationBar({
+    required this.index,
+    required this.noticeCount,
+    required this.onSelected,
+  });
+
+  final int index;
+  final int noticeCount;
+  final ValueChanged<int> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    const destinations = [
+      (Icons.home_outlined, Icons.home_rounded, 'Home'),
+      (
+        Icons.play_circle_outline_rounded,
+        Icons.play_circle_fill_rounded,
+        'Sermons',
+      ),
+      (Icons.menu_book_outlined, Icons.menu_book_rounded, 'Nyimbo'),
+      (Icons.edit_note_outlined, Icons.edit_note_rounded, 'Notes'),
+      (Icons.campaign_outlined, Icons.campaign_rounded, 'Notices'),
+      (Icons.grid_view_outlined, Icons.grid_view_rounded, 'More'),
+    ];
+    return Container(
+      decoration: BoxDecoration(
+        color: colors.surface,
+        border: Border(top: BorderSide(color: colors.outlineVariant)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(
+              alpha: AppTheme.isDark(context) ? .25 : .05,
+            ),
+            blurRadius: 18,
+            offset: const Offset(0, -4),
           ),
         ],
+      ),
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 68,
+          child: Row(
+            children: List.generate(destinations.length, (i) {
+              final destination = destinations[i];
+              final selected = i == index;
+              return Expanded(
+                child: _NavDestination(
+                  icon: selected ? destination.$2 : destination.$1,
+                  label: destination.$3,
+                  selected: selected,
+                  badge: i == 4 ? noticeCount : 0,
+                  onTap: () => onSelected(i),
+                ),
+              );
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NavDestination extends StatelessWidget {
+  const _NavDestination({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.badge,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final int badge;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final active = selected ? colors.primary : colors.onSurfaceVariant;
+    return Semantics(
+      selected: selected,
+      button: true,
+      label: label,
+      child: InkWell(
+        onTap: onTap,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOutCubic,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 13,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: selected
+                        ? colors.primaryContainer
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(11),
+                  ),
+                  child: Icon(icon, size: 21, color: active),
+                ),
+                if (badge > 0)
+                  Positioned(
+                    right: 0,
+                    top: -5,
+                    child: Container(
+                      constraints: const BoxConstraints(minWidth: 16),
+                      height: 16,
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      decoration: BoxDecoration(
+                        color: colors.secondary,
+                        borderRadius: BorderRadius.circular(99),
+                        border: Border.all(color: colors.surface, width: 1.5),
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        badge > 9 ? '9+' : '$badge',
+                        style: TextStyle(
+                          color: colors.onSecondary,
+                          fontSize: 9,
+                          fontWeight: FontWeight.w800,
+                          height: 1,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 3),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                letterSpacing: .1,
+                color: active,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -613,18 +884,20 @@ class HomePage extends StatefulWidget {
     required this.name,
     required this.section,
     required this.onOpenPage,
+    this.noticeCount = 0,
     super.key,
   });
 
   final String name;
   final String section;
   final ValueChanged<int> onOpenPage;
+  final int noticeCount;
 
   static const _verses = [
     (
       '“The Lord is my shepherd; I shall not want.”',
       'Psalm 23:1',
-      '“Ambuye ndiye m’busa wanga; sindidzasowa kanthu.”',
+      '“Ambuye ndiye m\'busa wanga; sindidzasowa kanthu.”',
     ),
     (
       '“I can do all things through Christ who strengthens me.”',
@@ -689,8 +962,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int _verseIndex =
-      DateTime.now().difference(DateTime(2024)).inDays %
-      HomePage._verses.length;
+      DateTime.now().microsecondsSinceEpoch % HomePage._verses.length;
   Timer? _verseTimer;
 
   @override
@@ -714,135 +986,137 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     final verse = HomePage._verses[_verseIndex];
-    return AppPage(
-      title: 'Hello, ${widget.name}',
-      subtitle: 'RCZ - Kanyama • Section ${widget.section}',
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-        children: [
-          Text(
-            'A moment for the Word',
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
-          const SizedBox(height: 10),
-          _VerseCard(verse: verse),
-          const SizedBox(height: 18),
-          Text(
-            'Our worship times',
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: const [
-              Expanded(
-                child: _InfoCard(
-                  icon: Icons.wb_sunny_outlined,
-                  title: 'First service',
-                  value: '06:30',
+    final colors = Theme.of(context).colorScheme;
+    final hour = DateTime.now().hour;
+    final greeting = hour < 12
+        ? 'Good morning'
+        : hour < 17
+        ? 'Good afternoon'
+        : 'Good evening';
+    return SafeArea(
+      bottom: false,
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 780),
+          child: ListView(
+            physics: const BouncingScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+            children: [
+              _HomeHeader(
+                initials: _initials(widget.name),
+                onOpenNotices: () => widget.onOpenPage(4),
+                onOpenProfile: () => widget.onOpenPage(5),
+                noticeCount: widget.noticeCount,
+              ),
+              const SizedBox(height: 26),
+              Text(
+                '$greeting,',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: colors.onSurfaceVariant,
+                  letterSpacing: .2,
                 ),
               ),
-              SizedBox(width: 12),
-              Expanded(
-                child: _InfoCard(
-                  icon: Icons.wb_twilight_outlined,
-                  title: 'Second service',
-                  value: '09:30',
+              const SizedBox(height: 2),
+              Text(
+                widget.name,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.headlineLarge,
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _MetaPill(
+                    icon: Icons.groups_2_outlined,
+                    label: 'Section ${widget.section}',
+                  ),
+                  const _MetaPill(
+                    icon: Icons.location_on_outlined,
+                    label: 'Kanyama',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              _VerseShowcase(
+                verse: verse,
+                index: _verseIndex,
+                total: HomePage._verses.length,
+                onNext: () => setState(
+                  () =>
+                      _verseIndex = (_verseIndex + 1) % HomePage._verses.length,
                 ),
               ),
+              const SizedBox(height: 28),
+              const _SectionHeading(
+                eyebrow: 'THIS WEEK',
+                title: 'Gather with us',
+                subtitle: 'Two Sunday services, every week',
+              ),
+              const SizedBox(height: 12),
+              _ServiceTimesCard(
+                onOpenEvents: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(builder: (_) => const EventsPage()),
+                ),
+              ),
+              const SizedBox(height: 28),
+              const _SectionHeading(
+                eyebrow: 'TIYENI LIMODZI',
+                title: 'Quick access',
+                subtitle: 'Together in worship and fellowship',
+              ),
+              const SizedBox(height: 12),
+              _QuickActionGrid(onOpenPage: widget.onOpenPage),
+              const SizedBox(height: 14),
+              _BiblePromoCard(
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const BibleHomePage(),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 28),
+              const _SectionHeading(
+                eyebrow: 'DISCOVER',
+                title: 'Life at Kanyama',
+                subtitle: 'Announcements, gatherings and our story',
+              ),
+              const SizedBox(height: 12),
+              _ExploreChurchCard(
+                onOpenNotices: () => widget.onOpenPage(4),
+                onOpenEvents: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(builder: (_) => const EventsPage()),
+                ),
+                onOpenHistory: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const ChurchHistoryPage(),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              _AboutChurchCard(),
             ],
           ),
-          const SizedBox(height: 18),
-          Text('Tiyeni limodzi', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 18),
-          _ActionGrid(onOpenPage: widget.onOpenPage),
-          const SizedBox(height: 14),
-          Card(
-            clipBehavior: Clip.antiAlias,
-            child: ListTile(
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 18,
-                vertical: 10,
-              ),
-              leading: Container(
-                width: 46,
-                height: 46,
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primaryContainer,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Icon(
-                  Icons.auto_stories_rounded,
-                  color: Theme.of(context).colorScheme.onPrimaryContainer,
-                ),
-              ),
-              title: const Text(
-                'Read the Bible',
-                style: TextStyle(fontWeight: FontWeight.w800),
-              ),
-              subtitle: const Text('Explore Scripture in Chichewa and more'),
-              trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 16),
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const BibleHomePage()),
-              ),
-            ),
-          ),
-          const SizedBox(height: 18),
-          Card(
-            child: Column(
-              children: [
-                ListTile(
-                  leading: const Icon(Icons.campaign_outlined),
-                  title: const Text('Church announcements'),
-                  subtitle: const Text(
-                    'Keep up with notices from the Secretariat',
-                  ),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => widget.onOpenPage(4),
-                ),
-                const Divider(height: 1),
-                ListTile(
-                  leading: const Icon(Icons.event_available_outlined),
-                  title: const Text('Church events'),
-                  subtitle: const Text('Services, prayer and fellowship'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(builder: (_) => const EventsPage()),
-                  ),
-                ),
-                const Divider(height: 1),
-                ListTile(
-                  leading: const Icon(Icons.history_edu_outlined),
-                  title: const Text('Our story'),
-                  subtitle: const Text(
-                    'Discover the Reformed Church in Zambia',
-                  ),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const ChurchHistoryPage(),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 18),
-          Card(
-            child: ExpansionTile(
-              leading: const Icon(Icons.church_outlined),
-              title: const Text('About our church'),
-              subtitle: const Text('Worship, fellowship and service'),
-              childrenPadding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
-              children: const [
-                Text(
-                  'RCZ Kanyama is a Reformed Christian congregation in Lusaka. We gather to worship God, learn from Scripture, encourage one another and serve our community. You are always welcome.',
-                ),
-              ],
-            ),
-          ),
-        ],
+        ),
       ),
     );
+  }
+
+  String _initials(String name) {
+    final parts = name
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((part) => part.isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return 'RCZ';
+    if (parts.length == 1) {
+      final single = parts.first;
+      return (single.length > 1 ? single.substring(0, 2) : single)
+          .toUpperCase();
+    }
+    return '${parts.first.substring(0, 1)}${parts.last.substring(0, 1)}'
+        .toUpperCase();
   }
 }
 
@@ -852,30 +1126,105 @@ class SermonVideo {
     required this.title,
     this.publishedAt,
     this.thumbnail,
+    this.createdAt,
+    this.scheduledStart,
+    this.isLive = false,
   });
 
   final String id;
   final String title;
   final DateTime? publishedAt;
   final String? thumbnail;
+  final DateTime? createdAt;
+  final DateTime? scheduledStart;
+  final bool isLive;
+
+  bool get isUpcoming {
+    final start = scheduledStart;
+    return !isLive && start != null && start.isAfter(DateTime.now());
+  }
+
+  /// The best available "newness" value. A null YouTube publication date must
+  /// never outrank a real one, so the database creation time is only a
+  /// fallback and is never treated as a publication timestamp.
+  DateTime? get sortDate => publishedAt ?? createdAt;
 
   factory SermonVideo.fromJson(Map<String, dynamic> json) {
-    final idValue = json['videoId'] ?? json['video_id'] ?? json['id'];
-    final id = idValue is Map
-        ? (idValue['videoId'] ?? idValue['video_id'] ?? '').toString()
-        : (idValue ?? '').toString();
+    final idValue = json['videoId'] ??
+        json['video_id'] ??
+        json['youtube_video_id'] ??
+        json['id'];
+    final id = parseYoutubeVideoId(
+          idValue is Map
+              ? (idValue['videoId'] ?? idValue['video_id'] ?? '').toString()
+              : (idValue ?? '').toString(),
+        ) ??
+        '';
     final published =
         json['publishedAt'] ?? json['published_at'] ?? json['publishedTime'];
+    final created = json['createdAt'] ?? json['created_at'];
+    final scheduled =
+        json['scheduledStart'] ?? json['scheduled_start'] ?? json['startTime'];
+    final liveValue = json['isLive'] ?? json['is_live'];
+    final publishedAt = _sermonDate(published);
+    final scheduledStart = _sermonDate(scheduled);
+    final rawLive = liveValue == true || liveValue?.toString() == 'true';
     return SermonVideo(
       id: id,
       title: (json['title'] ?? 'RCZ - Kanyama service').toString(),
-      publishedAt: published == null
-          ? null
-          : DateTime.tryParse(published.toString()),
+      publishedAt: publishedAt,
+      createdAt: _sermonDate(created),
+      scheduledStart: scheduledStart,
+      isLive: _isLiveNow(rawLive, scheduledStart ?? publishedAt),
       thumbnail:
-          json['thumbnail']?.toString() ?? json['thumbnailUrl']?.toString(),
+          json['thumbnail']?.toString() ??
+          json['thumbnailUrl']?.toString() ??
+          json['thumbnail_url']?.toString(),
     );
   }
+
+  /// A badge must never outlive the service. When the sync function has not
+  /// cleared an old flag, a stream that started more than twelve hours ago is
+  /// treated as an ordinary past video.
+  static bool _isLiveNow(bool rawLive, DateTime? reference) {
+    if (!rawLive) return false;
+    if (reference == null) return true;
+    return DateTime.now().difference(reference) < const Duration(hours: 12);
+  }
+}
+
+String _sermonDateLabel(DateTime value) {
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  final local = value.toLocal();
+  return '${local.day} ${months[local.month - 1]} ${local.year}';
+}
+
+DateTime? _sermonDate(Object? value) {
+  if (value == null) return null;
+  if (value is num) {
+    // YouTube scheduled starts are sometimes returned as Unix seconds.
+    final milliseconds = value > 100000000000
+        ? value.toInt()
+        : value.toInt() * 1000;
+    return DateTime.fromMillisecondsSinceEpoch(
+      milliseconds,
+      isUtc: true,
+    ).toLocal();
+  }
+  return DateTime.tryParse(value.toString())?.toLocal();
 }
 
 class SermonsPage extends StatefulWidget {
@@ -886,39 +1235,61 @@ class SermonsPage extends StatefulWidget {
   State<SermonsPage> createState() => _SermonsPageState();
 }
 
-class _SermonsPageState extends State<SermonsPage> {
-  static const _fallback = [
-    SermonVideo(id: 'GYd4KOvEutA', title: 'Recent worship service'),
-    SermonVideo(id: 'K73245kzX1I', title: 'Recent worship service'),
-    SermonVideo(id: '2cEjuD0NOOo', title: 'Recent worship service'),
-    SermonVideo(id: 'yzUp9XYzojQ', title: 'Recent worship service'),
-  ];
+/// Extracts an 11-character YouTube video ID from a bare ID or from the common
+/// URL shapes (watch, youtu.be, embed, shorts, live). Returns null when the
+/// value does not contain a valid ID, so a bad row can never reach the player.
+String? parseYoutubeVideoId(String? raw) {
+  final value = raw?.trim() ?? '';
+  if (value.isEmpty) return null;
+  final idPattern = RegExp(r'^[A-Za-z0-9_-]{11}$');
+  if (idPattern.hasMatch(value)) return value;
+  final uri = Uri.tryParse(value);
+  if (uri == null || uri.host.isEmpty) return null;
+  final host = uri.host.toLowerCase();
+  String? candidate;
+  if (host == 'youtu.be' || host == 'www.youtu.be') {
+    candidate = uri.pathSegments.isEmpty ? null : uri.pathSegments.first;
+  } else if (host.endsWith('youtube.com') ||
+      host.endsWith('youtube-nocookie.com')) {
+    candidate = uri.queryParameters['v'];
+    if (candidate == null && uri.pathSegments.length >= 2) {
+      const prefixes = {'embed', 'shorts', 'live', 'v'};
+      if (prefixes.contains(uri.pathSegments.first)) {
+        candidate = uri.pathSegments[1];
+      }
+    }
+  }
+  if (candidate != null && idPattern.hasMatch(candidate)) return candidate;
+  return null;
+}
 
-  late final YoutubePlayerController _controller;
+class _SermonsPageState extends State<SermonsPage> {
+  // The controller is created once, when the first valid sermon is known, and
+  // is only closed in dispose(). Selecting another sermon reuses it.
+  YoutubePlayerController? _controller;
+  StreamSubscription<YoutubePlayerValue>? _playerSubscription;
+  Timer? _failureTimer;
+  Timer? _refreshTimer;
+
   final Set<String> _favourites = {};
-  List<SermonVideo> _videos = _fallback;
+  List<SermonVideo> _videos = const [];
   int _selectedVideo = 0;
   bool _loading = false;
   bool _showSavedOnly = false;
-  Timer? _refreshTimer;
+  bool _playerFailed = false;
+  int _failureCode = 0;
+
+  SermonVideo? get _current {
+    if (_videos.isEmpty) return null;
+    final index = _selectedVideo < _videos.length ? _selectedVideo : 0;
+    return _videos[index];
+  }
 
   @override
   void initState() {
     super.initState();
     _favourites.addAll(
       widget.preferences.getStringList('sermon_favourites') ?? const [],
-    );
-    _controller = YoutubePlayerController.fromVideoId(
-      videoId: _fallback.first.id,
-      autoPlay: false,
-      params: const YoutubePlayerParams(
-        showControls: true,
-        showFullscreenButton: true,
-        strictRelatedVideos: true,
-        enableJavaScript: true,
-        playsInline: false,
-        origin: 'https://www.youtube-nocookie.com',
-      ),
     );
     _refreshSermons(showMessage: false);
     _refreshTimer = Timer.periodic(
@@ -930,53 +1301,179 @@ class _SermonsPageState extends State<SermonsPage> {
   @override
   void dispose() {
     _refreshTimer?.cancel();
-    _controller.close();
+    _failureTimer?.cancel();
+    _playerSubscription?.cancel();
+    _controller?.close();
     super.dispose();
+  }
+
+  void _createController(String videoId) {
+    final controller = YoutubePlayerController.fromVideoId(
+      videoId: videoId,
+      autoPlay: false,
+      params: const YoutubePlayerParams(
+        showControls: true,
+        showFullscreenButton: true,
+        strictRelatedVideos: true,
+        enableJavaScript: true,
+        playsInline: false,
+        origin: null,
+        userAgent:
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      ),
+    );
+    _playerSubscription = controller.stream.listen(_onPlayerValue);
+    _controller = controller;
+  }
+
+  /// YouTube reports an error and then often recovers while buffering, so an
+  /// error only becomes visible if it is still unresolved a few seconds later.
+  void _onPlayerValue(YoutubePlayerValue value) {
+    final hasError = value.error != YoutubeError.none;
+    final state = value.playerState;
+    if (state == PlayerState.playing) {
+      _failureTimer?.cancel();
+      if (_playerFailed && mounted) setState(() => _playerFailed = false);
+      return;
+    }
+    if (hasError) {
+      if (kDebugMode) {
+        debugPrint('[SERMON_PLAYER] state=$state error=${value.error} '
+            '(code ${value.error.code})');
+      }
+      _failureTimer?.cancel();
+      _failureTimer = Timer(const Duration(seconds: 4), () {
+        if (!mounted) return;
+        final latest = _controller?.value;
+        if (latest == null ||
+            latest.error == YoutubeError.none ||
+            latest.playerState == PlayerState.playing) {
+          return;
+        }
+        setState(() {
+          _playerFailed = true;
+          _failureCode = latest.error.code;
+        });
+      });
+    }
+  }
+
+  Future<void> _showVideo(SermonVideo video, {required bool autoPlay}) async {
+    final controller = _controller;
+    if (controller == null) return;
+    _failureTimer?.cancel();
+    if (_playerFailed) setState(() => _playerFailed = false);
+    try {
+      if (autoPlay) {
+        await controller.loadVideoById(videoId: video.id);
+      } else {
+        await controller.cueVideoById(videoId: video.id);
+      }
+    } catch (error) {
+      if (kDebugMode) debugPrint('[SERMON_PLAYER] load failed: $error');
+      if (mounted) setState(() => _playerFailed = true);
+    }
   }
 
   Future<void> _refreshSermons({bool showMessage = true}) async {
     if (_loading) return;
-    setState(() {
-      _loading = true;
-    });
+    setState(() => _loading = true);
     try {
       try {
         await Supabase.instance.client.functions.invoke('sync-youtube-sermons');
       } catch (error) {
-        debugPrint('YouTube sermon sync unavailable: $error');
+        if (kDebugMode) debugPrint('YouTube sermon sync unavailable: $error');
       }
       final response = await Supabase.instance.client
           .from('sermons')
           .select()
-          .order('published_at', ascending: false)
-          .limit(10);
+          .order('published_at', ascending: false, nullsFirst: false)
+          .order('created_at', ascending: false)
+          .limit(30);
+      final seen = <String>{};
       final loaded = <SermonVideo>[];
       for (final item in response) {
         final video = SermonVideo.fromJson(item);
-        if (video.id.isNotEmpty) {
-          loaded.add(video);
+        // fromJson yields an empty id for anything that is not a valid
+        // YouTube ID; such rows and duplicates are skipped.
+        if (video.id.isNotEmpty && seen.add(video.id)) loaded.add(video);
+      }
+      final sorted = _sortSermons(loaded);
+      if (!mounted) return;
+      if (sorted.isNotEmpty) {
+        final currentId = _current?.id;
+        final keepIndex = currentId == null
+            ? -1
+            : sorted.indexWhere((video) => video.id == currentId);
+        setState(() {
+          _videos = sorted;
+          _selectedVideo = keepIndex >= 0 ? keepIndex : 0;
+        });
+        if (_controller == null && kIsWeb) {
+          setState(() => _createController(sorted.first.id));
+        } else if (keepIndex < 0 && kIsWeb) {
+          // Only the previously selected video disappeared; cue (do not
+          // autoplay) the new first one.
+          await _showVideo(sorted.first, autoPlay: false);
         }
       }
-      if (!mounted) return;
-      setState(() {
-        if (loaded.isNotEmpty) {
-          _videos = loaded;
-          _selectedVideo = 0;
-        } else {}
-      });
-      if (loaded.isNotEmpty) {
-        await _controller.loadVideoById(videoId: loaded.first.id);
-      }
     } catch (error) {
-      if (!mounted) return;
-      debugPrint('Sermon refresh failed: $error');
+      if (kDebugMode) debugPrint('Sermon refresh failed: $error');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
-    if (showMessage && mounted && _videos.length > 1) {
+    if (showMessage && mounted && _videos.isNotEmpty) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('Sermons refreshed.')));
     }
+  }
+
+  List<SermonVideo> _sortSermons(List<SermonVideo> input) {
+    final now = DateTime.now();
+    final live = input.where((video) => video.isLive).toList();
+    final upcoming = input
+        .where(
+          (video) =>
+              !video.isLive &&
+              video.scheduledStart != null &&
+              video.scheduledStart!.isAfter(now),
+        )
+        .toList();
+    final regular = input
+        .where(
+          (video) =>
+              !video.isLive &&
+              (video.scheduledStart == null ||
+                  !video.scheduledStart!.isAfter(now)),
+        )
+        .toList();
+
+    live.sort((a, b) => _compareSermonDates(b.sortDate, a.sortDate));
+    upcoming.sort((a, b) => a.scheduledStart!.compareTo(b.scheduledStart!));
+    final hasPublishedDates = regular.any((video) => video.publishedAt != null);
+    regular.sort((a, b) {
+      if (hasPublishedDates) {
+        if (a.publishedAt == null && b.publishedAt == null) {
+          return _compareSermonDates(b.createdAt, a.createdAt);
+        }
+        if (a.publishedAt == null) return 1;
+        if (b.publishedAt == null) return -1;
+        final byDate = b.publishedAt!.compareTo(a.publishedAt!);
+        if (byDate != 0) return byDate;
+      } else {
+        final byDate = _compareSermonDates(b.createdAt, a.createdAt);
+        if (byDate != 0) return byDate;
+      }
+      return a.title.toLowerCase().compareTo(b.title.toLowerCase());
+    });
+    return [...live, ...upcoming, ...regular];
+  }
+
+  int _compareSermonDates(DateTime? a, DateTime? b) {
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    return a.compareTo(b);
   }
 
   Future<void> _toggleFavourite(String id) async {
@@ -998,11 +1495,118 @@ class _SermonsPageState extends State<SermonsPage> {
     );
   }
 
+  Future<void> _openOnYoutube(SermonVideo video) async {
+    await launchUrl(
+      Uri.parse('https://www.youtube.com/watch?v=${video.id}'),
+      mode: LaunchMode.externalApplication,
+    );
+  }
+
+  String get _failureMessage {
+    switch (_failureCode) {
+      case 100:
+        return 'This video is private or has been removed.';
+      case 101:
+      case 150:
+        return 'The video owner has not allowed this video to be played '
+            'inside other apps.';
+      default:
+        return 'This video could not be played right now.';
+    }
+  }
+
+  Widget _buildPlayerArea(Widget? player) {
+    final video = _current;
+    return AspectRatio(
+      aspectRatio: 16 / 9,
+      child: ColoredBox(
+        color: Colors.black,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (player != null)
+              player
+            else
+              const Center(
+                child: CircularProgressIndicator(color: Colors.white70),
+              ),
+            if (_playerFailed && video != null)
+              Container(
+                color: Colors.black87,
+                padding: const EdgeInsets.all(16),
+                alignment: Alignment.center,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.play_disabled_rounded,
+                        color: Colors.white70, size: 32),
+                    const SizedBox(height: 8),
+                    Text(
+                      _failureMessage,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 8,
+                      alignment: WrapAlignment.center,
+                      children: [
+                        FilledButton.tonal(
+                          onPressed: () => _showVideo(video, autoPlay: true),
+                          child: const Text('Try again'),
+                        ),
+                        TextButton(
+                          onPressed: () => _openOnYoutube(video),
+                          child: const Text('Watch on YouTube'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final controller = _controller;
+    if (kIsWeb) {
+      if (controller == null) return _buildPage(context, null);
+      return YoutubePlayerScaffold(
+        controller: controller,
+        aspectRatio: 16 / 9,
+        builder: (context, player) => _buildPage(context, player),
+      );
+    }
+    // Android: load the embed URL directly in a WebView so YouTube does not
+    // require an HTTP Referer (the iframe-in-local-HTML approach fails with
+    // error 153).
+    return _buildPage(context, _AndroidEmbedPlayer(videoId: _current?.id));
+  }
+
+  Widget _buildPage(BuildContext context, Widget? player) {
+    final colors = Theme.of(context).colorScheme;
+    final visible = _videos
+        .asMap()
+        .entries
+        .where(
+          (entry) => !_showSavedOnly || _favourites.contains(entry.value.id),
+        )
+        .toList();
+    final nowPlayingTitle = _current?.title ?? 'Sermons from RCZ Kanyama';
     return AppPage(
       title: 'Sermons',
       subtitle: 'Mauthenga a moyo • Watch and grow in the Word',
+      actions: [
+        IconButton(
+          tooltip: 'Refresh sermons',
+          onPressed: _loading ? null : () => _refreshSermons(),
+          icon: const Icon(Icons.refresh_rounded),
+        ),
+      ],
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -1013,22 +1617,47 @@ class _SermonsPageState extends State<SermonsPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  YoutubePlayer(controller: _controller, aspectRatio: 16 / 9),
+                  _buildPlayerArea(player),
                   Padding(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          _videos.isEmpty
-                              ? 'Sermons from RCZ Kanyama'
-                              : _videos[_selectedVideo < _videos.length
-                                        ? _selectedVideo
-                                        : 0]
-                                    .title,
-                          style: Theme.of(context).textTheme.titleMedium
-                              ?.copyWith(fontWeight: FontWeight.w800),
+                        Row(
+                          children: [
+                            Container(
+                              width: 6,
+                              height: 6,
+                              decoration: BoxDecoration(
+                                color: colors.secondary,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 7),
+                            Text(
+                              _videos.isEmpty ? 'SERMON LIBRARY' : 'NOW PLAYING',
+                              style: Theme.of(context).textTheme.labelSmall
+                                  ?.copyWith(
+                                    color: colors.secondary,
+                                    letterSpacing: 1.6,
+                                  ),
+                            ),
+                          ],
                         ),
+                        const SizedBox(height: 8),
+                        Text(
+                          nowPlayingTitle,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        if (_loading) ...[
+                          const SizedBox(height: 12),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(99),
+                            child: const LinearProgressIndicator(minHeight: 3),
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -1037,139 +1666,435 @@ class _SermonsPageState extends State<SermonsPage> {
             ),
           ),
           Expanded(
-            child: ListView(
-              physics: const BouncingScrollPhysics(),
-              padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        'Latest messages',
-                        style: Theme.of(context).textTheme.titleLarge
-                            ?.copyWith(fontWeight: FontWeight.w800),
-                      ),
-                    ),
-                    IconButton(
-                      tooltip: _showSavedOnly
-                          ? 'Show all sermons'
-                          : 'Show saved sermons',
-                      onPressed: () =>
-                          setState(() => _showSavedOnly = !_showSavedOnly),
-                      icon: Icon(
-                        _showSavedOnly ? Icons.bookmark : Icons.bookmark_border,
-                      ),
-                    ),
-                  ],
+            child: RefreshIndicator(
+              onRefresh: () => _refreshSermons(showMessage: false),
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(
+                  parent: BouncingScrollPhysics(),
                 ),
-                const SizedBox(height: 10),
-                if (_videos.isNotEmpty)
-                  ..._videos
-                      .asMap()
-                      .entries
-                      .where(
-                        (entry) =>
-                            !_showSavedOnly ||
-                            _favourites.contains(entry.value.id),
-                      )
-                      .take(10)
-                      .map((entry) {
-                        final index = entry.key;
-                        final video = entry.value;
-                        final saved = _favourites.contains(video.id);
-                        return Card(
-                          margin: const EdgeInsets.only(bottom: 10),
-                          clipBehavior: Clip.antiAlias,
-                          child: ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 7,
+                padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Latest messages',
+                              style: Theme.of(context).textTheme.titleLarge,
                             ),
-                            leading: ClipRRect(
-                              borderRadius: BorderRadius.circular(12),
-                              child: Image.network(
-                                video.thumbnail ??
-                                    'https://img.youtube.com/vi/${video.id}/mqdefault.jpg',
-                                width: 104,
-                                height: 66,
-                                fit: BoxFit.cover,
-                                errorBuilder: (_, _, _) => Container(
-                                  width: 104,
-                                  height: 66,
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .surfaceContainerHighest,
-                                  child: const Icon(Icons.play_circle_outline),
-                                ),
-                              ),
+                            const SizedBox(height: 2),
+                            Text(
+                              _showSavedOnly
+                                  ? '${_favourites.length} saved '
+                                        '${_favourites.length == 1 ? 'sermon' : 'sermons'}'
+                                  : '${_videos.length} available to watch',
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(color: colors.onSurfaceVariant),
                             ),
-                            title: Text(
-                              video.title,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            subtitle: Text(
-                              index == _selectedVideo
-                                  ? 'Now playing'
-                                  : 'Watch sermon',
-                              style: TextStyle(
-                                color: index == _selectedVideo
-                                    ? Theme.of(context).colorScheme.primary
-                                    : null,
-                                fontWeight: index == _selectedVideo
-                                    ? FontWeight.w700
-                                    : null,
-                              ),
-                            ),
-                            tileColor: index == _selectedVideo
-                                ? Theme.of(context).colorScheme.primaryContainer
-                                      .withValues(alpha: .45)
-                                : null,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(14),
-                              side: BorderSide(
-                                color: index == _selectedVideo
-                                    ? Theme.of(context).colorScheme.primary
-                                    : Colors.transparent,
-                              ),
-                            ),
-                            onTap: () async {
-                              setState(() => _selectedVideo = index);
-                              await _controller.loadVideoById(
-                                videoId: video.id,
-                              );
-                            },
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  tooltip: saved
-                                      ? 'Remove from saved'
-                                      : 'Save sermon',
-                                  onPressed: () => _toggleFavourite(video.id),
-                                  icon: Icon(
-                                    saved
-                                        ? Icons.bookmark
-                                        : Icons.bookmark_border,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Share sermon',
-                                  onPressed: () => _shareVideo(video),
-                                  icon: const Icon(Icons.share_outlined),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      }),
-              ],
+                          ],
+                        ),
+                      ),
+                      _FilterToggle(
+                        icon: _showSavedOnly
+                            ? Icons.bookmark_rounded
+                            : Icons.bookmark_border_rounded,
+                        label: 'Saved',
+                        selected: _showSavedOnly,
+                        onTap: () =>
+                            setState(() => _showSavedOnly = !_showSavedOnly),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  if (visible.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 40),
+                      child: _EmptyState(
+                        icon: _showSavedOnly
+                            ? Icons.bookmark_border_rounded
+                            : Icons.play_circle_outline_rounded,
+                        title: _showSavedOnly
+                            ? 'No saved sermons'
+                            : 'Sermons will appear here',
+                        message: _showSavedOnly
+                            ? 'Tap the bookmark on a sermon to keep it close.'
+                            : 'Connect to the internet to load the latest messages.',
+                      ),
+                    )
+                  else
+                    ...visible.map((entry) {
+                      final index = entry.key;
+                      final video = entry.value;
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: _SermonTile(
+                          video: video,
+                          isPlaying: index == _selectedVideo,
+                          saved: _favourites.contains(video.id),
+                          onTap: () {
+                            if (index == _selectedVideo && !_playerFailed) {
+                              return;
+                            }
+                            setState(() => _selectedVideo = index);
+                            _showVideo(video, autoPlay: true);
+                          },
+                          onToggleSaved: () => _toggleFavourite(video.id),
+                          onShare: () => _shareVideo(video),
+                        ),
+                      );
+                    }),
+                ],
+              ),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _HymnLanguageSwitch extends StatelessWidget {
+  const _HymnLanguageSwitch({required this.english, required this.onChanged});
+
+  final bool english;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(AppRadii.pill),
+        border: Border.all(color: colors.outlineVariant),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _LanguageOption(
+            label: 'Chichewa',
+            selected: !english,
+            onTap: () => onChanged(false),
+          ),
+          _LanguageOption(
+            label: 'English',
+            selected: english,
+            onTap: () => onChanged(true),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LanguageOption extends StatelessWidget {
+  const _LanguageOption({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+          color: selected ? colors.surface : Colors.transparent,
+          borderRadius: BorderRadius.circular(AppRadii.pill),
+          boxShadow: selected
+              ? [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: .06),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
+                  ),
+                ]
+              : const [],
+        ),
+        child: Text(
+          label,
+          style: Theme.of(context).textTheme.labelMedium?.copyWith(
+            color: selected ? colors.primary : colors.onSurfaceVariant,
+            fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FilterToggle extends StatelessWidget {
+  const _FilterToggle({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: selected ? colors.primaryContainer : colors.surface,
+      borderRadius: BorderRadius.circular(AppRadii.pill),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadii.pill),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppRadii.pill),
+            border: Border.all(
+              color: selected ? colors.primary : colors.outlineVariant,
+              width: selected ? 1.2 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: 16,
+                color: selected ? colors.primary : colors.onSurfaceVariant,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: selected ? colors.primary : colors.onSurfaceVariant,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SermonTile extends StatelessWidget {
+  const _SermonTile({
+    required this.video,
+    required this.isPlaying,
+    required this.saved,
+    required this.onTap,
+    required this.onToggleSaved,
+    required this.onShare,
+  });
+
+  final SermonVideo video;
+  final bool isPlaying;
+  final bool saved;
+  final VoidCallback onTap;
+  final VoidCallback onToggleSaved;
+  final VoidCallback onShare;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final live = video.isLive;
+    final upcoming = video.isUpcoming;
+    final statusColor = live ? colors.error : colors.secondary;
+    final statusText = live
+        ? 'LIVE'
+        : upcoming
+        ? 'UPCOMING'
+        : null;
+    final date = video.publishedAt ?? video.createdAt;
+    final subtitle = isPlaying
+        ? 'Now playing'
+        : live
+        ? 'Live now'
+        : upcoming
+        ? 'Starts ${_sermonDateLabel(video.scheduledStart!)}'
+        : date == null
+        ? 'Tap to watch'
+        : _sermonDateLabel(date);
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadii.card),
+        side: BorderSide(
+          color: live
+              ? colors.error
+              : isPlaying
+              ? colors.primary
+              : colors.outlineVariant,
+          width: live || isPlaying ? 1.4 : 1,
+        ),
+      ),
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(11),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Image.network(
+                      video.thumbnail ??
+                          'https://img.youtube.com/vi/${video.id}/mqdefault.jpg',
+                      width: 118,
+                      height: 74,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => Container(
+                        width: 118,
+                        height: 74,
+                        color: colors.surfaceContainerHigh,
+                        child: Icon(
+                          Icons.play_circle_outline_rounded,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    Container(
+                      width: 30,
+                      height: 30,
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: .45),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: .6),
+                        ),
+                      ),
+                      child: const Icon(
+                        Icons.play_arrow_rounded,
+                        size: 18,
+                        color: Colors.white,
+                      ),
+                    ),
+                    if (statusText != null)
+                      Positioned(
+                        left: 5,
+                        top: 5,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 3,
+                          ),
+                          decoration: BoxDecoration(
+                            color: statusColor,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            statusText,
+                            style: TextStyle(
+                              color: live ? colors.onError : colors.onSecondary,
+                              fontSize: 7.5,
+                              letterSpacing: .8,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      video.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall
+                          ?.copyWith(fontSize: 13.5, height: 1.4),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: isPlaying
+                            ? colors.primary
+                            : live
+                            ? colors.error
+                            : upcoming
+                            ? colors.secondary
+                            : colors.onSurfaceVariant,
+                        fontWeight: isPlaying || live || upcoming
+                            ? FontWeight.w700
+                            : null,
+                        fontSize: 11.5,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        _MiniIconButton(
+                          tooltip: saved ? 'Remove from saved' : 'Save sermon',
+                          onPressed: onToggleSaved,
+                          icon: saved
+                              ? Icons.bookmark_rounded
+                              : Icons.bookmark_border_rounded,
+                          active: saved,
+                        ),
+                        _MiniIconButton(
+                          tooltip: 'Share sermon',
+                          onPressed: onShare,
+                          icon: Icons.ios_share_rounded,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MiniIconButton extends StatelessWidget {
+  const _MiniIconButton({
+    required this.tooltip,
+    required this.onPressed,
+    required this.icon,
+    this.active = false,
+  });
+
+  final String tooltip;
+  final VoidCallback onPressed;
+  final IconData icon;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      visualDensity: VisualDensity.compact,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 32, minHeight: 30),
+      iconSize: 18,
+      icon: Icon(
+        icon,
+        color: active ? colors.primary : colors.onSurfaceVariant,
       ),
     );
   }
@@ -1238,8 +2163,9 @@ String _hymnTitle(String lyrics, int number) {
       .where((line) => line.trim().isNotEmpty)
       .take(2)
       .map(
-        (line) =>
-            line.replaceFirst(RegExp(r'^(?:\d+|[IVX]+)[.)]?\s*'), '').trim(),
+        (line) => line
+            .replaceFirst(RegExp(r'^(?:\d+[.)]?|[IVX]+[.)])\s*'), '')
+            .trim(),
       )
       .where((line) => line.isNotEmpty)
       .toList();
@@ -1298,62 +2224,10 @@ class _HymnsPageState extends State<HymnsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return AppPage(
       title: 'Nyimbo',
       subtitle: 'Offline hymnbook • Chichewa and English',
-      actions: [
-        IconButton(
-          tooltip: 'Search hymns',
-          onPressed: () async {
-            final query = await showDialog<String>(
-              context: context,
-              builder: (context) => AlertDialog(
-                title: const Text('Search hymns'),
-                content: TextField(
-                  autofocus: true,
-                  controller: _searchController,
-                  decoration: const InputDecoration(
-                    hintText: 'Number, title or words',
-                    prefixIcon: Icon(Icons.search),
-                  ),
-                  onSubmitted: (value) => Navigator.pop(context, value),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Close'),
-                  ),
-                  FilledButton(
-                    onPressed: () =>
-                        Navigator.pop(context, _searchController.text),
-                    child: const Text('Search'),
-                  ),
-                ],
-              ),
-            );
-            if (query != null && mounted) setState(() {});
-          },
-          icon: const Icon(Icons.search),
-        ),
-        PopupMenuButton<bool>(
-          tooltip: 'Language',
-          initialValue: _english,
-          onSelected: (value) => setState(() => _english = value),
-          itemBuilder: (_) => const [
-            PopupMenuItem(value: false, child: Text('Chichewa')),
-            PopupMenuItem(value: true, child: Text('English')),
-          ],
-          icon: const Icon(Icons.translate),
-        ),
-        IconButton(
-          tooltip: _showFavouritesOnly ? 'Show all hymns' : 'Favourite hymns',
-          onPressed: () =>
-              setState(() => _showFavouritesOnly = !_showFavouritesOnly),
-          icon: Icon(
-            _showFavouritesOnly ? Icons.favorite : Icons.favorite_border,
-          ),
-        ),
-      ],
       child: FutureBuilder<List<Hymn>>(
         future: _hymnsFuture,
         builder: (context, snapshot) {
@@ -1384,46 +2258,206 @@ class _HymnsPageState extends State<HymnsPage> {
           return Column(
             children: [
               Padding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-                child: Column(children: [const SizedBox(height: 4)]),
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
+                child: Column(
+                  children: [
+                    TextField(
+                      controller: _searchController,
+                      onChanged: (_) => setState(() {}),
+                      textInputAction: TextInputAction.search,
+                      decoration: InputDecoration(
+                        hintText: 'Search by number, title or lyrics',
+                        prefixIcon: const Icon(Icons.search_rounded, size: 21),
+                        suffixIcon: _searchController.text.isEmpty
+                            ? null
+                            : IconButton(
+                                tooltip: 'Clear search',
+                                onPressed: () {
+                                  _searchController.clear();
+                                  setState(() {});
+                                },
+                                icon: const Icon(Icons.close_rounded, size: 19),
+                              ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        _HymnLanguageSwitch(
+                          english: _english,
+                          onChanged: (value) =>
+                              setState(() => _english = value),
+                        ),
+                        const Spacer(),
+                        _FilterToggle(
+                          icon: _showFavouritesOnly
+                              ? Icons.favorite_rounded
+                              : Icons.favorite_border_rounded,
+                          label: 'Favourites',
+                          selected: _showFavouritesOnly,
+                          onTap: () => setState(
+                            () => _showFavouritesOnly = !_showFavouritesOnly,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+                child: Row(
+                  children: [
+                    Text(
+                      query.isEmpty ? 'All hymns' : 'Search results',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
+                    const Spacer(),
+                    Text(
+                      '${visible.length} shown',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                        fontSize: 11.5,
+                      ),
+                    ),
+                  ],
+                ),
               ),
               Expanded(
-                child: ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-                  itemCount: visible.length,
-                  itemBuilder: (_, index) {
-                    final hymn = visible[index];
-                    final title = _english
-                        ? hymn.englishTitle
-                        : hymn.chichewaTitle;
-                    return Card(
-                      margin: const EdgeInsets.only(bottom: 10),
-                      child: ListTile(
-                        leading: CircleAvatar(
-                          backgroundColor: Theme.of(context)
-                              .colorScheme
-                              .primaryContainer,
-                          child: Text('${hymn.number}'),
-                        ),
-                        title: Text(
-                          title,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: Text(
-                          (_english ? hymn.englishText : hymn.chichewaText)
-                                  .trim()
-                                  .isEmpty
-                              ? 'Lyrics not yet in this language file'
-                              : (_english
-                                    ? 'English edition'
-                                    : 'Chichewa edition'),
-                        ),
-                        onTap: () => _openHymn(hymn),
+                child: visible.isEmpty
+                    ? ListView(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        padding: const EdgeInsets.fromLTRB(20, 30, 20, 24),
+                        children: [
+                          _EmptyState(
+                            icon: _showFavouritesOnly
+                                ? Icons.favorite_border_rounded
+                                : Icons.search_off_rounded,
+                            title: _showFavouritesOnly
+                                ? 'No favourite hymns yet'
+                                : 'No hymns found',
+                            message: _showFavouritesOnly
+                                ? 'Open a hymn and tap the heart to save it here.'
+                                : 'Try a hymn number, a title or a line from the lyrics.',
+                          ),
+                        ],
+                      )
+                    : ListView.builder(
+                        physics: const BouncingScrollPhysics(),
+                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                        itemCount: visible.length,
+                        itemBuilder: (_, index) {
+                          final hymn = visible[index];
+                          final title = _english
+                              ? hymn.englishTitle
+                              : hymn.chichewaTitle;
+                          final favourite = _favourites.contains(hymn.number);
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: Card(
+                              clipBehavior: Clip.antiAlias,
+                              child: InkWell(
+                                onTap: () => _openHymn(hymn),
+                                child: Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    12,
+                                    11,
+                                    10,
+                                    11,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Container(
+                                        width: 46,
+                                        height: 46,
+                                        decoration: BoxDecoration(
+                                          color: colors.primaryContainer,
+                                          borderRadius: BorderRadius.circular(
+                                            12,
+                                          ),
+                                        ),
+                                        alignment: Alignment.center,
+                                        child: Text(
+                                          '${hymn.number}',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .titleSmall
+                                              ?.copyWith(
+                                                color:
+                                                    colors.onPrimaryContainer,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 13),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              title,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .titleSmall
+                                                  ?.copyWith(
+                                                    fontSize: 13.5,
+                                                    height: 1.35,
+                                                  ),
+                                            ),
+                                            const SizedBox(height: 3),
+                                            Text(
+                                              (_english
+                                                          ? hymn.englishText
+                                                          : hymn.chichewaText)
+                                                      .trim()
+                                                      .isEmpty
+                                                  ? 'Lyrics not yet available'
+                                                  : (_english
+                                                        ? 'English edition'
+                                                        : 'Chichewa edition'),
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodySmall
+                                                  ?.copyWith(
+                                                    color:
+                                                        colors.onSurfaceVariant,
+                                                    fontSize: 11.5,
+                                                  ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      if (favourite)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            right: 4,
+                                          ),
+                                          child: Icon(
+                                            Icons.favorite_rounded,
+                                            size: 15,
+                                            color: colors.secondary,
+                                          ),
+                                        ),
+                                      Icon(
+                                        Icons.chevron_right_rounded,
+                                        size: 19,
+                                        color: colors.onSurfaceVariant
+                                            .withValues(alpha: .7),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
                       ),
-                    );
-                  },
-                ),
               ),
             ],
           );
@@ -1609,84 +2643,91 @@ class _HymnReaderPageState extends State<HymnReaderPage> {
                       .clamp(0.0, 100000.0)
                       .toDouble(),
                 ),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 15,
-                        vertical: 7,
-                      ),
-                      decoration: BoxDecoration(
-                        color: colors.primaryContainer,
-                        borderRadius: BorderRadius.circular(30),
-                      ),
-                      child: Text(
-                        'HYMN ${widget.hymn.number}  •  ${widget.languageLabel.toUpperCase()}',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: colors.onPrimaryContainer,
-                          fontWeight: FontWeight.w800,
-                          fontSize: 11,
-                          letterSpacing: 1.1,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                    Text(
-                      widget.lyrics.trim().isEmpty
-                          ? 'Hymn ${widget.hymn.number}'
-                          : _hymnTitle(widget.lyrics, widget.hymn.number),
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        height: 1.35,
-                        color: colors.primary,
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                    Divider(
-                      color: colors.primary.withValues(alpha: .22),
-                      indent: 70,
-                      endIndent: 70,
-                    ),
-                    const SizedBox(height: 24),
-                    if (widget.lyrics.trim().isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 18),
-                        child: Text(
-                          'The lyrics for this hymn are not yet present in the supplied ${widget.languageLabel.toLowerCase()} JSON file.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: colors.onSurfaceVariant),
-                        ),
-                      )
-                    else
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
-                        child: SelectableText.rich(
-                          TextSpan(
-                            style: Theme.of(context).textTheme.bodyLarge
-                                ?.copyWith(
-                                  fontFamily: 'serif',
-                                  fontSize: 20.0 * _readerScale,
-                                  height: 1.48,
-                                  letterSpacing: .15,
-                                  color: colors.onSurface,
-                                ),
-                            children: _buildLyrics(),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 720),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 15,
+                            vertical: 7,
                           ),
-                          textAlign: TextAlign.center,
+                          decoration: BoxDecoration(
+                            color: colors.primaryContainer,
+                            borderRadius: BorderRadius.circular(AppRadii.pill),
+                          ),
+                          child: Text(
+                            'HYMN ${widget.hymn.number}  •  ${widget.languageLabel.toUpperCase()}',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: colors.onPrimaryContainer,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 10.5,
+                              letterSpacing: 1.3,
+                            ),
+                          ),
                         ),
-                      ),
-                    const SizedBox(height: 34),
-                    Text(
-                      'RCZ - Kanyama',
-                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                        color: colors.onSurfaceVariant,
-                        letterSpacing: 1.2,
-                      ),
+                        const SizedBox(height: 24),
+                        Text(
+                          widget.lyrics.trim().isEmpty
+                              ? 'Hymn ${widget.hymn.number}'
+                              : _hymnTitle(widget.lyrics, widget.hymn.number),
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.titleLarge
+                              ?.copyWith(
+                                fontWeight: FontWeight.w800,
+                                height: 1.35,
+                                color: colors.primary,
+                              ),
+                        ),
+                        const SizedBox(height: 24),
+                        Divider(
+                          color: colors.primary.withValues(alpha: .22),
+                          indent: 70,
+                          endIndent: 70,
+                        ),
+                        const SizedBox(height: 24),
+                        if (widget.lyrics.trim().isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 18),
+                            child: Text(
+                              'The lyrics for this hymn are not yet present in the supplied ${widget.languageLabel.toLowerCase()} JSON file.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: colors.onSurfaceVariant),
+                            ),
+                          )
+                        else
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 4),
+                            child: SelectableText.rich(
+                              TextSpan(
+                                style: Theme.of(context).textTheme.bodyLarge
+                                    ?.copyWith(
+                                      fontFamily: 'SourceSerif4',
+                                      fontSize: 20.0 * _readerScale,
+                                      height: 1.55,
+                                      letterSpacing: .1,
+                                      color: colors.onSurface,
+                                    ),
+                                children: _buildLyrics(),
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        const SizedBox(height: 34),
+                        Text(
+                          'RCZ - Kanyama',
+                          style: Theme.of(context).textTheme.labelMedium
+                              ?.copyWith(
+                                color: colors.onSurfaceVariant,
+                                letterSpacing: 1.2,
+                              ),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -1723,64 +2764,45 @@ class NotesPage extends StatefulWidget {
 
 class _NotesPageState extends State<NotesPage> {
   final _searchController = TextEditingController();
-  List<Note> _notes = [];
+  final NotesRepository _repository = NotesRepository.instance;
+  List<Note> _notes = const [];
   bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _loadNotes();
+    _repository.addListener(_onNotesChanged);
+    unawaited(_loadNotes());
+  }
+
+  Future<void> _loadNotes() async {
+    await _repository.ensureLoaded(widget.preferences);
+    if (!mounted) return;
+    setState(() {
+      _notes = _repository.notes;
+      _isLoading = false;
+    });
+  }
+
+  void _onNotesChanged() {
+    if (!mounted) return;
+    setState(() => _notes = _repository.notes);
   }
 
   @override
   void dispose() {
+    _repository.removeListener(_onNotesChanged);
     _searchController.dispose();
     super.dispose();
   }
 
-  void _loadNotes() {
-    try {
-      final saved = widget.preferences.getString('notes');
-      if (saved != null && saved.isNotEmpty) {
-        _notes = (jsonDecode(saved) as List)
-            .map((item) => Note.fromJson(item as Map<String, dynamic>))
-            .toList();
-        _notes.sort((a, b) {
-          if (a.isPinned != b.isPinned) return a.isPinned ? -1 : 1;
-          return b.updatedAt.compareTo(a.updatedAt);
-        });
-      }
-    } catch (error) {
-      debugPrint('Saved notes could not be decoded: $error');
-      _notes = [];
-    }
-    if (mounted) setState(() => _isLoading = false);
-  }
-
-  Future<void> _saveNotes() async {
-    await widget.preferences.setString(
-      'notes',
-      jsonEncode(_notes.map((note) => note.toJson()).toList()),
-    );
-  }
-
   Future<void> _editNote([Note? note]) async {
-    final result = await showModalBottomSheet<Note>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (_) => NoteEditor(note: note),
+    final result = await Navigator.of(context).push<Note>(
+      MaterialPageRoute<Note>(builder: (_) => NoteEditorPage(note: note)),
     );
-    if (result == null) return;
-    setState(() {
-      if (note == null) {
-        _notes.insert(0, result);
-      } else {
-        final index = _notes.indexOf(note);
-        _notes[index] = result;
-      }
-    });
-    await _saveNotes();
+    if (result != null) {
+      await _repository.save(result);
+    }
   }
 
   Future<void> _viewNote(Note note) async {
@@ -1788,7 +2810,6 @@ class _NotesPageState extends State<NotesPage> {
       MaterialPageRoute<void>(
         builder: (_) => NoteViewPage(
           note: note,
-          fontScale: 1.0,
           onEdit: () async {
             Navigator.of(context).pop();
             await _editNote(note);
@@ -1806,42 +2827,19 @@ class _NotesPageState extends State<NotesPage> {
       );
       return;
     }
-    setState(() => _notes.remove(note));
-    await _saveNotes();
+    await _repository.delete(note.id);
   }
 
-  Future<void> _togglePin(Note note) async {
-    final index = _notes.indexOf(note);
-    if (index < 0) return;
-    setState(() {
-      _notes[index] = Note(
-        id: note.id,
-        title: note.title,
-        body: note.body,
-        updatedAt: DateTime.now(),
-        isPinned: !note.isPinned,
-      );
-      _notes.sort(
-        (a, b) => b.isPinned.toString().compareTo(a.isPinned.toString()),
-      );
-    });
-    await _saveNotes();
-  }
+  Future<void> _togglePin(Note note) => _repository.togglePin(note.id);
 
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
-    final query = _searchController.text.trim().toLowerCase();
-    final notes = _notes
-        .where(
-          (note) =>
-              query.isEmpty ||
-              note.title.toLowerCase().contains(query) ||
-              note.body.toLowerCase().contains(query),
-        )
-        .toList();
+    final colors = Theme.of(context).colorScheme;
+    final query = _searchController.text.trim();
+    final notes = _repository.search(query);
     return AppPage(
       title: 'Notes',
       subtitle: 'Keep what speaks to your heart',
@@ -1850,56 +2848,110 @@ class _NotesPageState extends State<NotesPage> {
           Column(
             children: [
               Padding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-                child: TextField(
-                  controller: _searchController,
-                  onChanged: (_) => setState(() {}),
-                  decoration: const InputDecoration(
-                    hintText: 'Search your notes',
-                    prefixIcon: Icon(Icons.search),
-                  ),
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
+                child: Column(
+                  children: [
+                    TextField(
+                      controller: _searchController,
+                      onChanged: (_) => setState(() {}),
+                      decoration: InputDecoration(
+                        hintText: 'Search your notes',
+                        prefixIcon: const Icon(Icons.search_rounded, size: 21),
+                        suffixIcon: _searchController.text.isEmpty
+                            ? null
+                            : IconButton(
+                                tooltip: 'Clear search',
+                                onPressed: () {
+                                  _searchController.clear();
+                                  setState(() {});
+                                },
+                                icon: const Icon(Icons.close_rounded, size: 19),
+                              ),
+                      ),
+                    ),
+                    if (_notes.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Text(
+                            query.isEmpty ? 'All notes' : 'Search results',
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(
+                                  color: colors.onSurfaceVariant,
+                                  letterSpacing: 1.2,
+                                ),
+                          ),
+                          const Spacer(),
+                          Text(
+                            '${notes.length} ${notes.length == 1 ? 'note' : 'notes'}',
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(
+                                  color: colors.onSurfaceVariant,
+                                  fontSize: 11.5,
+                                ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
                 ),
               ),
               Expanded(
                 child: notes.isEmpty
-                    ? const _EmptyState(
-                        icon: Icons.edit_note,
-                        title: 'Start a new note',
-                        message: 'Write sermon highlights, prayer points, reminders and ideas. Your notes are only visible to you.',
+                    ? ListView(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        padding: const EdgeInsets.fromLTRB(20, 30, 20, 24),
+                        children: [
+                          _EmptyState(
+                            icon: query.isEmpty
+                                ? Icons.edit_note_rounded
+                                : Icons.search_off_rounded,
+                            title: query.isEmpty
+                                ? 'Start a new note'
+                                : 'No matching notes',
+                            message: query.isEmpty
+                                ? 'Write sermon highlights, prayer points and reflections, or save a verse from the Bible. Your notes are only visible to you.'
+                                : 'Try a different word or clear the search to see all your notes.',
+                          ),
+                        ],
                       )
                     : ListView.separated(
-                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 90),
+                        physics: const BouncingScrollPhysics(),
+                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 96),
                         itemCount: notes.length,
-                        separatorBuilder: (_, _) => const SizedBox(height: 10),
+                        separatorBuilder: (_, _) => const SizedBox(height: 9),
                         itemBuilder: (_, index) {
                           final note = notes[index];
+                          final source = note.source;
                           return Dismissible(
                             key: ValueKey(note.id),
                             direction: DismissDirection.horizontal,
                             background: Container(
                               alignment: Alignment.centerLeft,
-                              padding: const EdgeInsets.only(left: 20),
+                              padding: const EdgeInsets.only(left: 22),
                               decoration: BoxDecoration(
-                                color: Theme.of(context).colorScheme.primary,
-                                borderRadius: BorderRadius.circular(20),
+                                color: colors.primary,
+                                borderRadius: BorderRadius.circular(
+                                  AppRadii.card,
+                                ),
                               ),
                               child: Icon(
-                                note.isPinned
-                                    ? Icons.push_pin_outlined
-                                    : Icons.push_pin,
-                                color: Colors.white,
+                                Icons.push_pin_rounded,
+                                color: colors.onPrimary,
                               ),
                             ),
                             secondaryBackground: Container(
                               alignment: Alignment.centerRight,
-                              padding: const EdgeInsets.only(right: 20),
+                              padding: const EdgeInsets.only(right: 22),
                               decoration: BoxDecoration(
-                                color: Theme.of(context).colorScheme.error,
-                                borderRadius: BorderRadius.circular(20),
+                                color: colors.error,
+                                borderRadius: BorderRadius.circular(
+                                  AppRadii.card,
+                                ),
                               ),
-                              child: const Icon(
-                                Icons.delete_outline,
-                                color: Colors.white,
+                              child: Icon(
+                                Icons.delete_outline_rounded,
+                                color: colors.onError,
                               ),
                             ),
                             confirmDismiss: (direction) async {
@@ -1914,67 +2966,181 @@ class _NotesPageState extends State<NotesPage> {
                               return true;
                             },
                             onDismissed: (_) async {
-                              setState(() => _notes.remove(note));
-                              await _saveNotes();
+                              await _repository.delete(note.id);
                             },
                             child: Card(
-                              child: ListTile(
-                                contentPadding: const EdgeInsets.fromLTRB(
-                                  18,
-                                  10,
-                                  10,
-                                  10,
-                                ),
-                                leading: CircleAvatar(
-                                  backgroundColor: Theme.of(context)
-                                      .colorScheme
-                                      .primaryContainer,
-                                  child: Icon(
-                                    note.isPinned
-                                        ? Icons.push_pin
-                                        : Icons.notes_outlined,
-                                  ),
-                                ),
-                                title: Text(
-                                  note.title.isEmpty
-                                      ? 'Untitled note'
-                                      : note.title,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                subtitle: Text(
-                                  '${note.body}\n${_formatDate(note.updatedAt)}',
-                                  maxLines: 3,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
+                              clipBehavior: Clip.antiAlias,
+                              child: InkWell(
                                 onTap: () => _viewNote(note),
-                                trailing: PopupMenuButton<String>(
-                                  onSelected: (value) {
-                                    if (value == 'edit') _editNote(note);
-                                    if (value == 'pin') _togglePin(note);
-                                    if (value == 'delete') _deleteNote(note);
-                                  },
-                                  itemBuilder: (_) => [
-                                    PopupMenuItem(
-                                      value: 'edit',
-                                      child: Text('Edit'),
-                                    ),
-                                    PopupMenuItem(
-                                      value: 'pin',
-                                      child: Text(
-                                        note.isPinned ? 'Unpin' : 'Pin',
+                                child: Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    14,
+                                    13,
+                                    6,
+                                    13,
+                                  ),
+                                  child: Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      _TintIcon(
+                                        icon: source != null
+                                            ? Icons.auto_stories_rounded
+                                            : note.isPinned
+                                            ? Icons.push_pin_rounded
+                                            : Icons.sticky_note_2_outlined,
+                                        size: 40,
+                                        radius: 11,
+                                        background: note.isPinned
+                                            ? colors.secondaryContainer
+                                            : source != null
+                                            ? colors.primaryContainer
+                                            : null,
+                                        foreground: note.isPinned
+                                            ? colors.onSecondaryContainer
+                                            : source != null
+                                            ? colors.onPrimaryContainer
+                                            : null,
                                       ),
-                                    ),
-                                    PopupMenuItem(
-                                      value: 'delete',
-                                      enabled: !note.isPinned,
-                                      child: Text(
-                                        note.isPinned
-                                            ? 'Unpin before deleting'
-                                            : 'Delete',
+                                      const SizedBox(width: 13),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Row(
+                                              children: [
+                                                Expanded(
+                                                  child: Text(
+                                                    note.title.isEmpty
+                                                        ? 'Untitled note'
+                                                        : note.title,
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: Theme.of(context)
+                                                        .textTheme
+                                                        .titleSmall
+                                                        ?.copyWith(
+                                                          fontSize: 14,
+                                                        ),
+                                                  ),
+                                                ),
+                                                if (note.isPinned)
+                                                  Padding(
+                                                    padding:
+                                                        const EdgeInsets.only(
+                                                          left: 6,
+                                                        ),
+                                                    child: Text(
+                                                      'PINNED',
+                                                      style: Theme.of(context)
+                                                          .textTheme
+                                                          .labelSmall
+                                                          ?.copyWith(
+                                                            fontSize: 8.5,
+                                                            color:
+                                                                colors.secondary,
+                                                            letterSpacing: 1,
+                                                          ),
+                                                    ),
+                                                  ),
+                                              ],
+                                            ),
+                                            if (source != null) ...[
+                                              const SizedBox(height: 3),
+                                              Text(
+                                                '${source.reference.toUpperCase()} \u00b7 ${source.translationName}',
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .labelSmall
+                                                    ?.copyWith(
+                                                      fontSize: 9,
+                                                      fontWeight:
+                                                          FontWeight.w700,
+                                                      color:
+                                                          colors.secondary,
+                                                      letterSpacing: 0.4,
+                                                    ),
+                                              ),
+                                            ],
+                                            const SizedBox(height: 4),
+                                            Text(
+                                              note.previewText.isEmpty
+                                                  ? 'No text yet'
+                                                  : note.previewText,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodySmall
+                                                  ?.copyWith(
+                                                    color: colors
+                                                        .onSurfaceVariant,
+                                                    height: 1.45,
+                                                  ),
+                                            ),
+                                            const SizedBox(height: 7),
+                                            Row(
+                                              children: [
+                                                Icon(
+                                                  Icons.schedule_rounded,
+                                                  size: 12,
+                                                  color: colors.onSurfaceVariant
+                                                      .withValues(alpha: .8),
+                                                ),
+                                                const SizedBox(width: 4),
+                                                Text(
+                                                  _formatDate(note.updatedAt),
+                                                  style: Theme.of(context)
+                                                      .textTheme
+                                                      .bodySmall
+                                                      ?.copyWith(
+                                                        color: colors
+                                                            .onSurfaceVariant,
+                                                        fontSize: 10.5,
+                                                      ),
+                                                ),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
                                       ),
-                                    ),
-                                  ],
+                                      PopupMenuButton<String>(
+                                        tooltip: 'Note options',
+                                        onSelected: (value) {
+                                          if (value == 'edit') _editNote(note);
+                                          if (value == 'pin') _togglePin(note);
+                                          if (value == 'delete') {
+                                            _deleteNote(note);
+                                          }
+                                        },
+                                        itemBuilder: (_) => [
+                                          const PopupMenuItem(
+                                            value: 'edit',
+                                            child: Text('Edit'),
+                                          ),
+                                          PopupMenuItem(
+                                            value: 'pin',
+                                            child: Text(
+                                              note.isPinned ? 'Unpin' : 'Pin',
+                                            ),
+                                          ),
+                                          PopupMenuItem(
+                                            value: 'delete',
+                                            enabled: !note.isPinned,
+                                            child: Text(
+                                              note.isPinned
+                                                  ? 'Unpin before deleting'
+                                                  : 'Delete',
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
                             ),
@@ -1989,7 +3155,7 @@ class _NotesPageState extends State<NotesPage> {
             bottom: 20,
             child: FloatingActionButton.extended(
               onPressed: _editNote,
-              icon: const Icon(Icons.add),
+              icon: const Icon(Icons.add_rounded),
               label: const Text('New note'),
             ),
           ),
@@ -1998,306 +3164,42 @@ class _NotesPageState extends State<NotesPage> {
     );
   }
 
-  String _formatDate(DateTime date) =>
-      '${date.day}/${date.month}/${date.year} • ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
-}
-
-class Note {
-  const Note({
-    required this.id,
-    required this.title,
-    required this.body,
-    required this.updatedAt,
-    required this.isPinned,
-  });
-
-  factory Note.fromJson(Map<String, dynamic> json) => Note(
-    id: json['id'] as String,
-    title: json['title'] as String,
-    body: json['body'] as String,
-    updatedAt: DateTime.parse(json['updatedAt'] as String),
-    isPinned: json['isPinned'] as bool? ?? false,
-  );
-
-  final String id;
-  final String title;
-  final String body;
-  final DateTime updatedAt;
-  final bool isPinned;
-
-  Map<String, dynamic> toJson() => {
-    'id': id,
-    'title': title,
-    'body': body,
-    'updatedAt': updatedAt.toIso8601String(),
-    'isPinned': isPinned,
-  };
-}
-
-List<InlineSpan> _noteSpans(String text, TextStyle base) {
-  final spans = <InlineSpan>[];
-  final pattern = RegExp(r'(\*\*.+?\*\*|\*.+?\*|__.+?__)');
-  var cursor = 0;
-  for (final match in pattern.allMatches(text)) {
-    if (match.start > cursor) {
-      spans.add(TextSpan(text: text.substring(cursor, match.start)));
-    }
-    final token = match.group(0)!;
-    if (token.startsWith('**')) {
-      spans.add(
-        TextSpan(
-          text: token.substring(2, token.length - 2),
-          style: base.copyWith(fontWeight: FontWeight.bold),
-        ),
-      );
-    } else if (token.startsWith('__')) {
-      spans.add(
-        TextSpan(
-          text: token.substring(2, token.length - 2),
-          style: base.copyWith(decoration: TextDecoration.underline),
-        ),
-      );
-    } else {
-      spans.add(
-        TextSpan(
-          text: token.substring(1, token.length - 1),
-          style: base.copyWith(fontStyle: FontStyle.italic),
-        ),
-      );
-    }
-    cursor = match.end;
-  }
-  if (cursor < text.length) spans.add(TextSpan(text: text.substring(cursor)));
-  return spans;
-}
-
-class NoteViewPage extends StatelessWidget {
-  const NoteViewPage({
-    required this.note,
-    required this.fontScale,
-    required this.onEdit,
-    super.key,
-  });
-
-  final Note note;
-  final double fontScale;
-  final VoidCallback onEdit;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final base = Theme.of(context).textTheme.bodyLarge!
-        .copyWith(fontSize: 17.0 * fontScale, height: 1.75);
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('My note'),
-        actions: [
-          IconButton(
-            tooltip: 'Edit note',
-            onPressed: onEdit,
-            icon: const Icon(Icons.edit_outlined),
-          ),
-        ],
-      ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(22, 18, 22, 36),
-        children: [
-          Row(
-            children: [
-              if (note.isPinned)
-                Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: Icon(Icons.push_pin, size: 18, color: colors.primary),
-                ),
-              Text(
-                note.isPinned ? 'PINNED NOTE' : 'PERSONAL NOTE',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: colors.primary,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 1.1,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            note.title.isEmpty ? 'Untitled note' : note.title,
-            style: Theme.of(context).textTheme.headlineSmall
-                ?.copyWith(fontWeight: FontWeight.w800, height: 1.25),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Updated ${note.updatedAt.day}/${note.updatedAt.month}/${note.updatedAt.year}',
-            style: Theme.of(context).textTheme.labelMedium
-                ?.copyWith(color: colors.onSurfaceVariant),
-          ),
-          const SizedBox(height: 22),
-          Divider(color: colors.outlineVariant),
-          const SizedBox(height: 18),
-          SelectableText.rich(
-            TextSpan(style: base, children: _noteSpans(note.body, base)),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class NoteEditor extends StatefulWidget {
-  const NoteEditor({this.note, super.key});
-
-  final Note? note;
-
-  @override
-  State<NoteEditor> createState() => _NoteEditorState();
-}
-
-class _NoteEditorState extends State<NoteEditor> {
-  late final _titleController = TextEditingController(
-    text: widget.note?.title ?? '',
-  );
-  late final _bodyController = TextEditingController(
-    text: widget.note?.body ?? '',
-  );
-  late bool _isPinned = widget.note?.isPinned ?? false;
-
-  @override
-  void dispose() {
-    _titleController.dispose();
-    _bodyController.dispose();
-    super.dispose();
-  }
-
-  void _wrapSelection(String marker) {
-    final value = _bodyController.value;
-    final selection = value.selection;
-    if (!selection.isValid || selection.isCollapsed) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Select some text first, then choose formatting.'),
-        ),
-      );
-      return;
-    }
-    final selected = value.text.substring(selection.start, selection.end);
-    final replacement = '$marker$selected$marker';
-    final updated = value.text.replaceRange(
-      selection.start,
-      selection.end,
-      replacement,
-    );
-    _bodyController.value = value.copyWith(
-      text: updated,
-      selection: TextSelection.collapsed(
-        offset: selection.start + replacement.length,
-      ),
-      composing: TextRange.empty,
-    );
-  }
-
-  void _save() {
-    if (_bodyController.text.trim().isEmpty &&
-        _titleController.text.trim().isEmpty) {
-      Navigator.pop(context);
-      return;
-    }
-    Navigator.pop(
-      context,
-      Note(
-        id: widget.note?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
-        title: _titleController.text.trim(),
-        body: _bodyController.text.trim(),
-        updatedAt: DateTime.now(),
-        isPinned: _isPinned,
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final bottom = MediaQuery.viewInsetsOf(context).bottom;
-    return Padding(
-      padding: EdgeInsets.fromLTRB(20, 0, 20, bottom + 20),
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              widget.note == null ? 'New note' : 'Edit note',
-              style: Theme.of(context).textTheme.headlineSmall
-                  ?.copyWith(fontWeight: FontWeight.w800),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _titleController,
-              textCapitalization: TextCapitalization.sentences,
-              decoration: const InputDecoration(
-                labelText: 'Title',
-                prefixIcon: Icon(Icons.title),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 4,
-              children: [
-                IconButton(
-                  tooltip: 'Bold selected text',
-                  onPressed: () => _wrapSelection('**'),
-                  icon: const Icon(Icons.format_bold),
-                ),
-                IconButton(
-                  tooltip: 'Italic selected text',
-                  onPressed: () => _wrapSelection('*'),
-                  icon: const Icon(Icons.format_italic),
-                ),
-                IconButton(
-                  tooltip: 'Underline selected text',
-                  onPressed: () => _wrapSelection('__'),
-                  icon: const Icon(Icons.format_underlined),
-                ),
-              ],
-            ),
-            TextField(
-              controller: _bodyController,
-              textCapitalization: TextCapitalization.sentences,
-              minLines: 6,
-              maxLines: 12,
-              decoration: const InputDecoration(
-                labelText: 'Write your note',
-                alignLabelWithHint: true,
-                prefixIcon: Icon(Icons.notes_outlined),
-              ),
-            ),
-            const SizedBox(height: 8),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: _isPinned,
-              onChanged: (value) => setState(() => _isPinned = value),
-              title: const Text('Pin this note'),
-              secondary: const Icon(Icons.push_pin_outlined),
-            ),
-            const SizedBox(height: 8),
-            FilledButton.icon(
-              onPressed: _save,
-              icon: const Icon(Icons.check),
-              label: const Text('Save note'),
-            ),
-          ],
-        ),
-      ),
-    );
+  String _formatDate(DateTime date) {
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    final time =
+        '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+    return '${date.day} ${months[date.month - 1]} ${date.year} \u00b7 $time';
   }
 }
 
 class NoticesPage extends StatefulWidget {
-  const NoticesPage({super.key});
+  const NoticesPage({
+    required this.readService,
+    this.onUnreadChanged,
+    super.key,
+  });
+
+  final NoticeReadService readService;
+  final ValueChanged<int>? onUnreadChanged;
 
   @override
   State<NoticesPage> createState() => _NoticesPageState();
 }
 
-class _NoticesPageState extends State<NoticesPage> {
+class _NoticesPageState extends State<NoticesPage> with WidgetsBindingObserver {
   bool _loading = true;
   List<Map<String, dynamic>> _notices = [];
   String? _error;
@@ -2305,14 +3207,37 @@ class _NoticesPageState extends State<NoticesPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load();
   }
 
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(widget.readService.mergeRemoteReceipts());
+      unawaited(_load());
+    }
+  }
+
+  void _notifyUnread() {
+    widget.onUnreadChanged?.call(
+      widget.readService.unreadCount(_notices.map((notice) => notice['id'])),
+    );
+  }
+
   Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
       final rows = await Supabase.instance.client
           .from('church_notices')
@@ -2321,6 +3246,7 @@ class _NoticesPageState extends State<NoticesPage> {
           .order('created_at', ascending: false);
       if (!mounted) return;
       setState(() => _notices = List<Map<String, dynamic>>.from(rows));
+      _notifyUnread();
     } catch (error) {
       if (!mounted) return;
       setState(
@@ -2353,11 +3279,72 @@ class _NoticesPageState extends State<NoticesPage> {
     return '${value.day} ${months[value.month - 1]} ${value.year}';
   }
 
+  Color _categoryAccent(String category, ColorScheme colors) {
+    switch (category.toLowerCase()) {
+      case 'event':
+        return colors.secondary;
+      case 'funeral':
+        return colors.tertiary;
+      case 'marriage':
+        return colors.tertiary;
+      case 'service update':
+        return colors.primary;
+      default:
+        return colors.primary;
+    }
+  }
+
+  Future<void> _openNotice(Map<String, dynamic> item) async {
+    final marked = await widget.readService.markRead(item['id']);
+    if (!mounted) return;
+    if (marked) {
+      setState(() {});
+      _notifyUnread();
+    }
+    final category = (item['category'] ?? 'Announcement').toString();
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) => _NoticeDetailSheet(
+        title: item['title']?.toString() ?? '',
+        body: item['body']?.toString() ?? '',
+        category: category,
+        date: _date(item['event_date'] ?? item['created_at']),
+        photoUrl: item['photo_url']?.toString(),
+        accent: _categoryAccent(category, Theme.of(context).colorScheme),
+      ),
+    );
+  }
+
+  Future<void> _openPhoto(String url) async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => Dialog(
+        clipBehavior: Clip.antiAlias,
+        child: InteractiveViewer(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 720, maxHeight: 600),
+            child: Image.network(url, fit: BoxFit.contain),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return AppPage(
       title: 'Church notices',
       subtitle: 'Official announcements and updates',
+      actions: [
+        IconButton(
+          tooltip: 'Refresh notices',
+          onPressed: _loading ? null : _load,
+          icon: const Icon(Icons.refresh_rounded),
+        ),
+      ],
       child: RefreshIndicator(
         onRefresh: _load,
         child: _loading
@@ -2365,8 +3352,8 @@ class _NoticesPageState extends State<NoticesPage> {
             : _error != null
             ? ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(20, 40, 20, 24),
                 children: [
-                  const SizedBox(height: 100),
                   _EmptyState(
                     icon: Icons.cloud_off_outlined,
                     title: 'Notices unavailable',
@@ -2377,8 +3364,8 @@ class _NoticesPageState extends State<NoticesPage> {
             : _notices.isEmpty
             ? ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(20, 40, 20, 24),
                 children: const [
-                  SizedBox(height: 100),
                   _EmptyState(
                     icon: Icons.campaign_outlined,
                     title: 'No notices yet',
@@ -2388,184 +3375,350 @@ class _NoticesPageState extends State<NoticesPage> {
               )
             : ListView.separated(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-                itemCount: _notices.length,
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 28),
+                itemCount: _notices.length + 1,
                 separatorBuilder: (_, _) => const SizedBox(height: 12),
                 itemBuilder: (context, index) {
-                  final item = _notices[index];
+                  if (index == 0) {
+                    return _NoticesBanner(count: _notices.length);
+                  }
+                  final item = _notices[index - 1];
                   final category = (item['category'] ?? 'Announcement')
                       .toString();
-                  return Card(
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(20),
-                      onTap: () => showModalBottomSheet<void>(
-                        context: context,
-                        isScrollControlled: true,
-                        showDragHandle: true,
-                        builder: (context) => SafeArea(
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(22, 8, 22, 30),
-                            child: SingleChildScrollView(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  if (item['photo_url'] != null) ...[
-                                    ClipRRect(
-                                      borderRadius: BorderRadius.circular(16),
-                                      child: GestureDetector(
-                                        onTap: () => showDialog<void>(
-                                          context: context,
-                                          builder: (_) => Dialog(
-                                            child: InteractiveViewer(
-                                              child: Image.network(
-                                                item['photo_url'].toString(),
-                                                fit: BoxFit.contain,
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                        child: Image.network(
-                                          item['photo_url'].toString(),
-                                          width: double.infinity,
-                                          height: 190,
-                                          fit: BoxFit.cover,
-                                          errorBuilder: (_, _, _) =>
-                                              const SizedBox.shrink(),
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(height: 16),
-                                  ],
-                                  Text(
-                                    category.toUpperCase(),
-                                    style: TextStyle(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .primary,
-                                      fontWeight: FontWeight.w800,
-                                      letterSpacing: 1,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 10),
-                                  Text(
-                                    item['title']?.toString() ?? '',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .headlineSmall
-                                        ?.copyWith(fontWeight: FontWeight.w800),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    _date(
-                                      item['event_date'] ?? item['created_at'],
-                                    ),
-                                  ),
-                                  const Divider(height: 28),
-                                  SelectableText(
-                                    item['body']?.toString() ?? '',
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(17),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            if (item['photo_url'] != null) ...[
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(14),
-                                child: GestureDetector(
-                                  onTap: () => showDialog<void>(
-                                    context: context,
-                                    builder: (_) => Dialog(
-                                      child: InteractiveViewer(
-                                        child: Image.network(
-                                          item['photo_url'].toString(),
-                                          fit: BoxFit.contain,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  child: Image.network(
-                                    item['photo_url'].toString(),
-                                    width: double.infinity,
-                                    height: 150,
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, _, _) =>
-                                        const SizedBox.shrink(),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 14),
-                            ],
-                            Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 5,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .primaryContainer,
-                                    borderRadius: BorderRadius.circular(20),
-                                  ),
-                                  child: Text(
-                                    category,
-                                    style: TextStyle(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .onPrimaryContainer,
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                ),
-                                const Spacer(),
-                                Text(
-                                  _date(
-                                    item['event_date'] ?? item['created_at'],
-                                  ),
-                                  style: Theme.of(context).textTheme.labelSmall,
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 12),
-                            Text(
-                              item['title']?.toString() ?? '',
-                              style: Theme.of(context).textTheme.titleMedium
-                                  ?.copyWith(fontWeight: FontWeight.w800),
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              item['body']?.toString() ?? '',
-                              maxLines: 3,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            const SizedBox(height: 10),
-                            Align(
-                              alignment: Alignment.centerRight,
-                              child: Text(
-                                'Read notice  →',
-                                style: TextStyle(
-                                  color: Theme.of(context).colorScheme.primary,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
+                  return _NoticeCard(
+                    category: category,
+                    date: _date(item['event_date'] ?? item['created_at']),
+                    title: item['title']?.toString() ?? '',
+                    body: item['body']?.toString() ?? '',
+                    photoUrl: item['photo_url']?.toString(),
+                    accent: _categoryAccent(category, colors),
+                    unread: !widget.readService.isRead(item['id']),
+                    onTap: () => _openNotice(item),
+                    onPhotoTap: item['photo_url'] == null
+                        ? null
+                        : () => _openPhoto(item['photo_url'].toString()),
                   );
                 },
               ),
+      ),
+    );
+  }
+}
+
+class _NoticesBanner extends StatelessWidget {
+  const _NoticesBanner({required this.count});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: colors.outlineVariant),
+      ),
+      child: Row(
+        children: [
+          _TintIcon(icon: Icons.verified_outlined, size: 36, radius: 10),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'From the church office',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '$count published ${count == 1 ? 'notice' : 'notices'}',
+                  style: Theme.of(context).textTheme.bodySmall
+                      ?.copyWith(color: colors.onSurfaceVariant),
+                ),
+              ],
+            ),
+          ),
+          Icon(Icons.shield_outlined, size: 18, color: colors.secondary),
+        ],
+      ),
+    );
+  }
+}
+
+class _NoticeCard extends StatelessWidget {
+  const _NoticeCard({
+    required this.category,
+    required this.date,
+    required this.title,
+    required this.body,
+    required this.photoUrl,
+    required this.accent,
+    required this.unread,
+    required this.onTap,
+    this.onPhotoTap,
+  });
+
+  final String category;
+  final String date;
+  final String title;
+  final String body;
+  final String? photoUrl;
+  final Color accent;
+  final bool unread;
+  final VoidCallback onTap;
+  final VoidCallback? onPhotoTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (photoUrl != null)
+              GestureDetector(
+                onTap: onPhotoTap,
+                child: Image.network(
+                  photoUrl!,
+                  height: 164,
+                  width: double.infinity,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(17, 15, 17, 15),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 5,
+                        ),
+                        decoration: BoxDecoration(
+                          color: accent.withValues(alpha: .12),
+                          borderRadius: BorderRadius.circular(AppRadii.pill),
+                        ),
+                        child: Text(
+                          category.toUpperCase(),
+                          style: TextStyle(
+                            color: accent,
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 1.1,
+                          ),
+                        ),
+                      ),
+                      if (unread) ...[
+                        const SizedBox(width: 7),
+                        Container(
+                          width: 7,
+                          height: 7,
+                          decoration: BoxDecoration(
+                            color: accent,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          date,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.right,
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(
+                                color: colors.onSurfaceVariant,
+                                fontSize: 11.5,
+                              ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleMedium
+                        ?.copyWith(fontSize: 16.5, height: 1.35),
+                  ),
+                  if (body.trim().isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      body,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: colors.onSurfaceVariant,
+                        height: 1.55,
+                        fontSize: 13.5,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Text(
+                        'Read notice',
+                        style: Theme.of(context).textTheme.labelLarge
+                            ?.copyWith(color: accent, fontSize: 12.5),
+                      ),
+                      const SizedBox(width: 5),
+                      Icon(
+                        Icons.arrow_forward_rounded,
+                        size: 15,
+                        color: accent,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _NoticeDetailSheet extends StatelessWidget {
+  const _NoticeDetailSheet({
+    required this.title,
+    required this.body,
+    required this.category,
+    required this.date,
+    required this.photoUrl,
+    required this.accent,
+  });
+
+  final String title;
+  final String body;
+  final String category;
+  final String date;
+  final String? photoUrl;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return SafeArea(
+      top: false,
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 680),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(22, 0, 22, 32),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (photoUrl != null) ...[
+                  GestureDetector(
+                    onTap: () => showDialog<void>(
+                      context: context,
+                      builder: (_) => Dialog(
+                        clipBehavior: Clip.antiAlias,
+                        child: InteractiveViewer(
+                          child: Image.network(photoUrl!, fit: BoxFit.contain),
+                        ),
+                      ),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: Image.network(
+                        photoUrl!,
+                        width: double.infinity,
+                        height: 210,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                ],
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 5,
+                  ),
+                  decoration: BoxDecoration(
+                    color: accent.withValues(alpha: .12),
+                    borderRadius: BorderRadius.circular(AppRadii.pill),
+                  ),
+                  child: Text(
+                    category.toUpperCase(),
+                    style: TextStyle(
+                      color: accent,
+                      fontSize: 9.5,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1.1,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.headlineSmall
+                      ?.copyWith(height: 1.3),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(
+                      Icons.schedule_rounded,
+                      size: 14,
+                      color: colors.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      date,
+                      style: Theme.of(context).textTheme.bodySmall
+                          ?.copyWith(color: colors.onSurfaceVariant),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                Divider(color: colors.outlineVariant),
+                const SizedBox(height: 18),
+                SelectableText(
+                  body,
+                  style: Theme.of(context).textTheme.bodyLarge
+                      ?.copyWith(color: colors.onSurface, height: 1.7),
+                ),
+                const SizedBox(height: 24),
+                Row(
+                  children: [
+                    Icon(
+                      Icons.verified_outlined,
+                      size: 15,
+                      color: colors.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Published by the RCZ Kanyama Secretariat',
+                        style: Theme.of(context).textTheme.bodySmall
+                            ?.copyWith(color: colors.onSurfaceVariant),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -2583,6 +3736,7 @@ class _SecretariatAccessPageState extends State<SecretariatAccessPage> {
   final _phone = TextEditingController();
   final _email = TextEditingController();
   final _password = TextEditingController();
+  final _confirmPassword = TextEditingController();
   bool _creating = false;
   bool _busy = false;
   bool _obscure = true;
@@ -2593,14 +3747,8 @@ class _SecretariatAccessPageState extends State<SecretariatAccessPage> {
     _phone.dispose();
     _email.dispose();
     _password.dispose();
+    _confirmPassword.dispose();
     super.dispose();
-  }
-
-  String? _requestedRole(String name) {
-    final value = name.trim().toUpperCase();
-    if (value.endsWith('VSEC')) return 'VSEC';
-    if (value.endsWith('SEC')) return 'SEC';
-    return null;
   }
 
   String _normaliseContactPhone(String value) {
@@ -2618,10 +3766,12 @@ class _SecretariatAccessPageState extends State<SecretariatAccessPage> {
     final email = _email.text.trim().toLowerCase();
     final phone = _normaliseContactPhone(_phone.text);
     final password = _password.text;
-    final role = _creating ? _requestedRole(name) : null;
+    // Role is assigned exclusively by the owner during approval. New
+    // registrations are always created as pending SEC applicants.
+    final role = _creating ? 'SEC' : null;
 
-    if (_creating && (name.isEmpty || role == null)) {
-      _message('Enter your full name ending in SEC or VSEC.');
+    if (_creating && name.isEmpty) {
+      _message('Enter your full name.');
       return;
     }
     if (!RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(email)) {
@@ -2634,6 +3784,10 @@ class _SecretariatAccessPageState extends State<SecretariatAccessPage> {
     }
     if (password.length < 8) {
       _message('Your password must be at least 8 characters long.');
+      return;
+    }
+    if (_creating && password != _confirmPassword.text) {
+      _message('The two passwords do not match.');
       return;
     }
 
@@ -2656,8 +3810,12 @@ class _SecretariatAccessPageState extends State<SecretariatAccessPage> {
           _message(
             'Account created. Check your email for a confirmation link, then return here and sign in. Your Secretariat role must still be approved by the church administrator.',
           );
+        } else if (response.user?.emailConfirmedAt == null) {
+          _message(
+            'Account created. Please confirm your email address before signing in. Your application is awaiting administrator approval.',
+          );
         } else {
-          await _checkAccess(response.user!.id, role);
+          await _checkAccess(response.user!.id);
         }
       } else {
         final response = await auth.signInWithPassword(
@@ -2667,8 +3825,10 @@ class _SecretariatAccessPageState extends State<SecretariatAccessPage> {
         final user = response.user;
         if (user == null) {
           _message('Login was unsuccessful.');
+        } else if (user.emailConfirmedAt == null) {
+          _message('Please confirm your email address before signing in.');
         } else {
-          await _checkAccess(user.id, null);
+          await _checkAccess(user.id);
         }
       }
     } on AuthException catch (error) {
@@ -2687,28 +3847,39 @@ class _SecretariatAccessPageState extends State<SecretariatAccessPage> {
     }
   }
 
-  Future<void> _checkAccess(String userId, String? requestedRole) async {
+  Future<void> _checkAccess(String userId) async {
     final row = await Supabase.instance.client
         .from('secretariat_accounts')
-        .select('role,is_active,display_name')
+        .select('role,is_active,display_name,status')
         .eq('user_id', userId)
         .maybeSingle();
     if (!mounted) return;
-    if (row == null || row['is_active'] != true) {
+    if (row == null) {
       _message(
-        'Your account exists, but Secretariat access has not yet been authorised by the church administrator.',
+        'No membership application was found for this account. Please contact the church administrator.',
       );
+      return;
+    }
+    final status = row['status']?.toString();
+    if (status == 'rejected') {
+      _message(
+        'Your application was not approved. Please contact the church administrator.',
+      );
+      return;
+    }
+    if (row['is_active'] != true) {
+      if (status == 'inactive') {
+        _message(
+          'Your account is currently inactive. Please contact the church administrator.',
+        );
+      } else {
+        _message('Your application is awaiting administrator approval.');
+      }
       return;
     }
     final role = row['role']?.toString().toUpperCase();
     if (role != 'SEC' && role != 'VSEC') {
       _message('This account does not have a valid Secretariat role.');
-      return;
-    }
-    if (requestedRole != null && role != requestedRole) {
-      _message(
-        'The SEC/VSEC suffix does not match the role assigned to this account.',
-      );
       return;
     }
     Navigator.of(context).pushReplacement(
@@ -2730,99 +3901,172 @@ class _SecretariatAccessPageState extends State<SecretariatAccessPage> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(title: const Text('Secretariat access')),
-      body: ListView(
-        padding: const EdgeInsets.all(22),
-        children: [
-          Icon(
-            Icons.admin_panel_settings_outlined,
-            size: 58,
-            color: Theme.of(context).colorScheme.primary,
-          ),
-          const SizedBox(height: 14),
-          Text(
-            _creating ? 'Create Secretariat account' : 'Welcome back',
-            style: Theme.of(context).textTheme.headlineSmall
-                ?.copyWith(fontWeight: FontWeight.w800),
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'This area is for church office bearers only. Register with your email address and contact phone number. Secretariat access is granted only after the church administrator approves your account.',
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 24),
-          if (_creating) ...[
-            TextField(
-              controller: _name,
-              textCapitalization: TextCapitalization.words,
-              decoration: const InputDecoration(
-                labelText: 'Full name (end with SEC or VSEC)',
-                prefixIcon: Icon(Icons.person_outline),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _phone,
-              keyboardType: TextInputType.phone,
-              decoration: const InputDecoration(
-                labelText: 'Contact phone number',
-                hintText: '0971234567',
-                prefixIcon: Icon(Icons.phone_outlined),
-              ),
-            ),
-            const SizedBox(height: 12),
-          ],
-          TextField(
-            controller: _email,
-            keyboardType: TextInputType.emailAddress,
-            autocorrect: false,
-            textCapitalization: TextCapitalization.none,
-            decoration: const InputDecoration(
-              labelText: 'Email address',
-              prefixIcon: Icon(Icons.email_outlined),
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _password,
-            obscureText: _obscure,
-            decoration: InputDecoration(
-              labelText: 'Password',
-              prefixIcon: const Icon(Icons.lock_outline),
-              suffixIcon: IconButton(
-                onPressed: () => setState(() => _obscure = !_obscure),
-                icon: Icon(
-                  _obscure
-                      ? Icons.visibility_outlined
-                      : Icons.visibility_off_outlined,
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: ListView(
+            physics: const BouncingScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(22, 8, 22, 32),
+            children: [
+              Center(
+                child: Container(
+                  width: 64,
+                  height: 64,
+                  decoration: BoxDecoration(
+                    color: colors.primaryContainer,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: colors.primary.withValues(alpha: .08),
+                    ),
+                  ),
+                  child: Icon(
+                    Icons.admin_panel_settings_outlined,
+                    size: 29,
+                    color: colors.primary,
+                  ),
                 ),
               ),
-            ),
+              const SizedBox(height: 18),
+              Text(
+                _creating ? 'Create Secretariat account' : 'Welcome back',
+                style: Theme.of(context).textTheme.headlineSmall,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'This area is for church office bearers only. Register with '
+                'your email address and contact phone number. Secretariat '
+                'access is granted only after the church administrator '
+                'approves your account.',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(color: colors.onSurfaceVariant, height: 1.55),
+              ),
+              const SizedBox(height: 24),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (_creating) ...[
+                        TextField(
+                          controller: _name,
+                          textCapitalization: TextCapitalization.words,
+                          decoration: const InputDecoration(
+                            labelText: 'Full name',
+                            prefixIcon: Icon(Icons.person_outline),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: _phone,
+                          keyboardType: TextInputType.phone,
+                          decoration: const InputDecoration(
+                            labelText: 'Contact phone number',
+                            hintText: '0971234567',
+                            prefixIcon: Icon(Icons.phone_outlined),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      TextField(
+                        controller: _email,
+                        keyboardType: TextInputType.emailAddress,
+                        autocorrect: false,
+                        textCapitalization: TextCapitalization.none,
+                        decoration: const InputDecoration(
+                          labelText: 'Email address',
+                          prefixIcon: Icon(Icons.email_outlined),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _password,
+                        obscureText: _obscure,
+                        decoration: InputDecoration(
+                          labelText: 'Password',
+                          prefixIcon: const Icon(Icons.lock_outline),
+                          suffixIcon: IconButton(
+                            tooltip: _obscure
+                                ? 'Show password'
+                                : 'Hide password',
+                            onPressed: () =>
+                                setState(() => _obscure = !_obscure),
+                            icon: Icon(
+                              _obscure
+                                  ? Icons.visibility_outlined
+                                  : Icons.visibility_off_outlined,
+                            ),
+                          ),
+                        ),
+                      ),
+                      if (_creating) ...[
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: _confirmPassword,
+                          obscureText: _obscure,
+                          decoration: const InputDecoration(
+                            labelText: 'Confirm password',
+                            prefixIcon: Icon(Icons.lock_outline),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 18),
+                      FilledButton(
+                        onPressed: _busy ? null : _submit,
+                        child: _busy
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : Text(_creating ? 'Create account' : 'Sign in'),
+                      ),
+                      TextButton(
+                        onPressed: _busy
+                            ? null
+                            : () => setState(() => _creating = !_creating),
+                        child: Text(
+                          _creating
+                              ? 'Already registered? Sign in'
+                              : 'New Secretariat member? Create an account',
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.lock_outline_rounded,
+                    size: 13,
+                    color: colors.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      'Only authorised office bearers can publish notices.',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
-          const SizedBox(height: 18),
-          FilledButton(
-            onPressed: _busy ? null : _submit,
-            child: _busy
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : Text(_creating ? 'Create account' : 'Sign in'),
-          ),
-          TextButton(
-            onPressed: _busy
-                ? null
-                : () => setState(() => _creating = !_creating),
-            child: Text(
-              _creating
-                  ? 'Already registered? Sign in'
-                  : 'New Secretariat member? Create an account',
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -3456,7 +4700,7 @@ class _EditProfileDialog extends StatefulWidget {
   final String phone;
   final String section;
   final Future<void> Function(String name, String phone, String section)
-      onSaveProfile;
+  onSaveProfile;
   final ScaffoldMessengerState messenger;
 
   @override
@@ -3500,20 +4744,14 @@ class _EditProfileDialogState extends State<_EditProfileDialog> {
     }
 
     if (!RegExp(r'^0\d{9}$').hasMatch(updatedPhone)) {
-      _showMessage(
-        'Enter a valid 10-digit Zambian number starting with 0.',
-      );
+      _showMessage('Enter a valid 10-digit Zambian number starting with 0.');
       return;
     }
 
     setState(() => _saving = true);
 
     try {
-      await widget.onSaveProfile(
-        updatedName,
-        updatedPhone,
-        _selectedSection,
-      );
+      await widget.onSaveProfile(updatedName, updatedPhone, _selectedSection);
 
       if (!mounted) return;
       Navigator.pop(context, true);
@@ -3564,10 +4802,7 @@ class _EditProfileDialogState extends State<_EditProfileDialog> {
               ),
               items: _sections
                   .map(
-                    (item) => DropdownMenuItem(
-                      value: item,
-                      child: Text(item),
-                    ),
+                    (item) => DropdownMenuItem(value: item, child: Text(item)),
                   )
                   .toList(),
               onChanged: _saving
@@ -3618,7 +4853,7 @@ class MorePage extends StatelessWidget {
   final String section;
   final String phone;
   final Future<void> Function(String name, String phone, String section)
-      onSaveProfile;
+  onSaveProfile;
   final bool isDark;
   final SharedPreferences preferences;
   final VoidCallback onToggleTheme;
@@ -3717,101 +4952,155 @@ class MorePage extends StatelessWidget {
 
     if (result == true && context.mounted) {
       messenger.showSnackBar(
-        const SnackBar(
-          content: Text('Your profile has been updated.'),
-        ),
+        const SnackBar(content: Text('Your profile has been updated.')),
       );
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return AppPage(
       title: 'More',
       subtitle: 'Your church, close at hand',
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+        physics: const BouncingScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 28),
         children: [
           Card(
-            child: ListTile(
-              leading: const Icon(Icons.account_circle_outlined),
-              title: Text(name),
-              subtitle: Text('Section $section • $phone'),
-              trailing: const Icon(Icons.edit_outlined),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
               onTap: () => _editProfile(context),
+              child: Padding(
+                padding: const EdgeInsets.all(18),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 54,
+                      height: 54,
+                      decoration: BoxDecoration(
+                        gradient: AppDecor.heroGradient(context),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: colors.primary.withValues(alpha: .18),
+                        ),
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        _nameInitials(name),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 17,
+                          letterSpacing: .5,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'MEMBER PROFILE',
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(
+                                  color: colors.secondary,
+                                  letterSpacing: 1.5,
+                                  fontSize: 9,
+                                ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            'Section $section  •  $phone',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(color: colors.onSurfaceVariant),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: colors.surfaceContainerHigh,
+                        borderRadius: BorderRadius.circular(11),
+                      ),
+                      child: Icon(
+                        Icons.edit_outlined,
+                        size: 18,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 24),
+          const _SettingsLabel('FAITH & COMMUNITY'),
+          const SizedBox(height: 9),
           Card(
+            clipBehavior: Clip.antiAlias,
             child: Column(
               children: [
-                ListTile(
-                  leading: const Icon(Icons.auto_stories_rounded),
-                  title: const Text('The Bible'),
-                  subtitle: const Text('Read and download Bible translations'),
-                  trailing: const Icon(Icons.chevron_right_rounded),
+                _SettingsTile(
+                  icon: Icons.auto_stories_rounded,
+                  title: 'The Bible',
+                  subtitle: 'Read and download translations',
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
                       builder: (_) => const BibleHomePage(),
                     ),
                   ),
                 ),
-                const Divider(height: 1),
-                SwitchListTile(
-                  value: isDark,
-                  onChanged: (_) => onToggleTheme(),
-                  secondary: const Icon(Icons.dark_mode_outlined),
-                  title: const Text('Dark mode'),
-                  subtitle: const Text('Comfortable viewing at any time'),
-                ),
-                const Divider(height: 1),
-                ListTile(
-                  leading: const Icon(Icons.text_fields_rounded),
-                  title: const Text('Reading size'),
-                  subtitle: const Text('Adjust text size throughout the app'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => _changeTextSize(context),
-                ),
-                const Divider(height: 1),
-                ListTile(
-                  leading: const Icon(Icons.admin_panel_settings_outlined),
-                  title: const Text('Secretariat access'),
-                  subtitle: const Text(
-                    'Sign in to the authorised church office',
-                  ),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const SecretariatAccessPage(),
-                    ),
-                  ),
-                ),
-                const Divider(height: 1),
-                ListTile(
-                  leading: const Icon(Icons.event_outlined),
-                  title: const Text('Church events'),
-                  subtitle: const Text('Upcoming gatherings and activities'),
-                  trailing: const Icon(Icons.chevron_right),
+                const _SettingsDivider(),
+                _SettingsTile(
+                  icon: Icons.event_outlined,
+                  title: 'Church events',
+                  subtitle: 'Upcoming gatherings and activities',
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(builder: (_) => const EventsPage()),
                   ),
                 ),
-                ListTile(
-                  leading: const Icon(Icons.history_edu_outlined),
-                  title: const Text('Church history'),
-                  subtitle: const Text('The Reformed Church in Zambia'),
-                  trailing: const Icon(Icons.chevron_right),
+                const _SettingsDivider(),
+                _SettingsTile(
+                  icon: Icons.history_edu_outlined,
+                  title: 'Church history',
+                  subtitle: 'The Reformed Church in Zambia',
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
                       builder: (_) => const ChurchHistoryPage(),
                     ),
                   ),
                 ),
-                ListTile(
-                  leading: const Icon(Icons.forum_outlined),
-                  title: const Text('Church WhatsApp group'),
-                  subtitle: const Text('Stay connected with the congregation'),
-                  trailing: const Icon(Icons.open_in_new),
+                const _SettingsDivider(),
+                _SettingsTile(
+                  icon: Icons.account_balance_outlined,
+                  title: 'Kanyama Congregation History',
+                  subtitle: 'Our own story, pastors and milestones',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const CongregationHistoryPage(),
+                    ),
+                  ),
+                ),
+                const _SettingsDivider(),
+                _SettingsTile(
+                  icon: Icons.forum_outlined,
+                  title: 'Church WhatsApp group',
+                  subtitle: 'Stay connected with the congregation',
+                  external: true,
                   onTap: () => launchUrl(
                     Uri.parse(
                       'https://chat.whatsapp.com/KcKMEjhMR4P8bmyRwBr8lz',
@@ -3819,35 +5108,139 @@ class MorePage extends StatelessWidget {
                     mode: LaunchMode.externalApplication,
                   ),
                 ),
-                ListTile(
-                  leading: const Icon(Icons.location_on_outlined),
-                  title: const Text('Find RCZ Kanyama'),
-                  subtitle: const Text('Open church location in Maps'),
-                  trailing: const Icon(Icons.open_in_new),
+                const _SettingsDivider(),
+                _SettingsTile(
+                  icon: Icons.location_on_outlined,
+                  title: 'Find RCZ Kanyama',
+                  subtitle: 'Open the church location in Maps',
+                  external: true,
                   onTap: () => _openMap(context),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.share_outlined),
-                  title: const Text('Share the app'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => _shareApp(context),
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 22),
+          const _SettingsLabel('PREFERENCES'),
+          const SizedBox(height: 9),
           Card(
-            child: ListTile(
-              leading: const Icon(Icons.church_outlined),
-              title: const Text('RCZ - Kanyama'),
-              subtitle: const Text('Kuunika M’mdima • Version 1.0.0'),
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              children: [
+                SwitchListTile(
+                  value: isDark,
+                  onChanged: (_) => onToggleTheme(),
+                  contentPadding: const EdgeInsets.fromLTRB(14, 4, 8, 4),
+                  secondary: const _TintIcon(
+                    icon: Icons.dark_mode_outlined,
+                    size: 38,
+                    radius: 11,
+                  ),
+                  title: Text(
+                    'Dark theme',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  subtitle: Text(
+                    'Comfortable viewing at any time',
+                    style: Theme.of(context).textTheme.bodySmall
+                        ?.copyWith(color: colors.onSurfaceVariant),
+                  ),
+                ),
+                const _SettingsDivider(),
+                _SettingsTile(
+                  icon: Icons.text_fields_rounded,
+                  title: 'Reading size',
+                  subtitle: 'Adjust text size throughout the app',
+                  onTap: () => _changeTextSize(context),
+                ),
+                const _SettingsDivider(),
+                _SettingsTile(
+                  icon: Icons.admin_panel_settings_outlined,
+                  title: 'Secretariat access',
+                  subtitle: 'Sign in to the authorised church office',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const SecretariatAccessPage(),
+                    ),
+                  ),
+                ),
+                const _SettingsDivider(),
+                _SettingsTile(
+                  icon: Icons.perm_media_outlined,
+                  title: 'Media Team access',
+                  subtitle: 'Manage the congregation history archive',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const MediaTeamAccessPage(),
+                    ),
+                  ),
+                ),
+                _OwnerAdminTile(),
+              ],
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 22),
+          const _SettingsLabel('ABOUT'),
+          const SizedBox(height: 9),
+          Card(
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              children: [
+                _SettingsTile(
+                  icon: Icons.share_outlined,
+                  title: 'Share the app',
+                  subtitle: 'Invite someone to RCZ Kanyama',
+                  onTap: () => _shareApp(context),
+                ),
+                const _SettingsDivider(),
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: AppColors.navy,
+                          borderRadius: BorderRadius.circular(11),
+                          border: Border.all(color: colors.outlineVariant),
+                        ),
+                        child: Image.asset(
+                          'assets/logo_white.png',
+                          errorBuilder: (_, _, _) =>
+                              Icon(Icons.church, color: colors.primary),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'RCZ - Kanyama',
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              "Kuunika M'mdima - Version 1.0.0",
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(color: colors.onSurfaceVariant),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 18),
           Center(
             child: Text(
               'Made by Phineas Chisale Mwale',
-              style: Theme.of(context).textTheme.labelMedium,
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(color: colors.onSurfaceVariant, fontSize: 11),
             ),
           ),
         ],
@@ -3856,7 +5249,112 @@ class MorePage extends StatelessWidget {
   }
 }
 
+String _nameInitials(String name) {
+  final parts = name
+      .trim()
+      .split(RegExp(r'\s+'))
+      .where((part) => part.isNotEmpty)
+      .toList();
+  if (parts.isEmpty) return 'RCZ';
+  if (parts.length == 1) {
+    final single = parts.first;
+    return (single.length > 1 ? single.substring(0, 2) : single).toUpperCase();
+  }
+  return '${parts.first.substring(0, 1)}${parts.last.substring(0, 1)}'
+      .toUpperCase();
+}
 
+class _SettingsLabel extends StatelessWidget {
+  const _SettingsLabel(this.label);
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 4),
+      child: Text(
+        label,
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+          letterSpacing: 1.7,
+          fontSize: 9.5,
+        ),
+      ),
+    );
+  }
+}
+
+class _SettingsDivider extends StatelessWidget {
+  const _SettingsDivider();
+
+  @override
+  Widget build(BuildContext context) =>
+      const Divider(indent: 66, endIndent: 16);
+}
+
+class _SettingsTile extends StatelessWidget {
+  const _SettingsTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+    this.external = false,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+  final bool external;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+        child: Row(
+          children: [
+            _TintIcon(icon: icon, size: 38, radius: 11),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                      fontSize: 11.5,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              external
+                  ? Icons.open_in_new_rounded
+                  : Icons.chevron_right_rounded,
+              size: external ? 16 : 20,
+              color: colors.onSurfaceVariant.withValues(alpha: .7),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class EventsPage extends StatelessWidget {
   const EventsPage({super.key});
@@ -3864,168 +5362,296 @@ class EventsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-
-    Widget serviceCard({
-      required IconData icon,
-      required String title,
-      required List<(String, String)> sessions,
-    }) {
-      return Card(
-        margin: const EdgeInsets.only(bottom: 14),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    return Scaffold(
+      appBar: AppBar(title: const Text('Church events')),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: ListView(
+            physics: const BouncingScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
             children: [
-              Row(
-                children: [
-                  CircleAvatar(
-                    backgroundColor: colors.primaryContainer,
-                    child: Icon(icon, color: colors.onPrimaryContainer),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w800,
+              Container(
+                clipBehavior: Clip.antiAlias,
+                padding: const EdgeInsets.fromLTRB(22, 22, 22, 22),
+                decoration: BoxDecoration(
+                  gradient: AppDecor.heroGradient(context),
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                child: Stack(
+                  children: [
+                    Positioned(
+                      right: -16,
+                      bottom: -28,
+                      child: Icon(
+                        Icons.church_rounded,
+                        size: 118,
+                        color: Colors.white.withValues(alpha: .07),
                       ),
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              ...sessions.map(
-                (session) => Padding(
-                  padding: const EdgeInsets.only(bottom: 9),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          session.$1,
-                          style: const TextStyle(
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'TIYENI LIMODZI',
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(
+                                color: AppColors.goldLight,
+                                letterSpacing: 1.8,
+                              ),
+                        ),
+                        const SizedBox(height: 10),
+                        const Text(
+                          'Gather. Worship.\nBelong.',
+                          style: TextStyle(
+                            fontFamily: 'SourceSerif4',
+                            fontSize: 27,
+                            height: 1.14,
                             fontWeight: FontWeight.w600,
+                            color: Colors.white,
+                            letterSpacing: -.2,
                           ),
                         ),
-                      ),
-                      Text(
-                        session.$2,
-                        style: TextStyle(
-                          color: colors.primary,
-                          fontWeight: FontWeight.w800,
+                        const SizedBox(height: 8),
+                        Text(
+                          'Worship and fellowship together as one congregation.',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            height: 1.5,
+                            color: Colors.white.withValues(alpha: .72),
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    Widget fellowshipCard() {
-      const fellowships = [
-        "Men's Fellowship",
-        "Women's Fellowship",
-        'Youth Fellowship',
-      ];
-
-      return Card(
-        margin: const EdgeInsets.only(bottom: 14),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  CircleAvatar(
-                    backgroundColor: colors.primaryContainer,
-                    child: Icon(
-                      Icons.groups_outlined,
-                      color: colors.onPrimaryContainer,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Text(
-                      'Fellowships (Vigwirizano)',
-                      style: TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-                ],
+              const SizedBox(height: 24),
+              const _SectionHeading(
+                eyebrow: 'WEEKLY RHYTHM',
+                title: 'Services',
+                subtitle: 'Come as you are — there is a place for you',
               ),
               const SizedBox(height: 12),
-              ...fellowships.map(
-                (name) => Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 7),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.people_outline,
-                        size: 20,
-                        color: colors.primary,
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          name,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ],
+              const _EventServiceCard(
+                icon: Icons.wb_sunny_outlined,
+                title: 'Sunday Service',
+                note: 'Every Sunday',
+                sessions: [
+                  ('First Service', '06:30'),
+                  ('Second Service', '09:30'),
+                ],
+              ),
+              const SizedBox(height: 10),
+              const _EventServiceCard(
+                icon: Icons.nightlight_outlined,
+                title: 'Wednesday Service',
+                note: 'Midweek gathering',
+                sessions: [('Midweek Service', '15:00')],
+              ),
+              const SizedBox(height: 22),
+              _SectionHeading(
+                eyebrow: 'VIGWIRIZANO',
+                title: 'Fellowships',
+                subtitle: 'Grow together in faith and friendship',
+              ),
+              const SizedBox(height: 12),
+              const _FellowshipCard(),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Icon(
+                    Icons.info_outline_rounded,
+                    size: 15,
+                    color: colors.onSurfaceVariant,
                   ),
-                ),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      'Times may change on public holidays and special church occasions.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                        fontSize: 11.5,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
         ),
-      );
-    }
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Church events'),
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          Text(
-            'Tiyeni limodzi',
-            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w800,
+    );
+  }
+}
+
+class _EventServiceCard extends StatelessWidget {
+  const _EventServiceCard({
+    required this.icon,
+    required this.title,
+    required this.note,
+    required this.sessions,
+  });
+
+  final IconData icon;
+  final String title;
+  final String note;
+  final List<(String, String)> sessions;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                _TintIcon(icon: icon),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        note,
+                        style: Theme.of(context).textTheme.bodySmall
+                            ?.copyWith(color: colors.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
                 ),
-          ),
-          const SizedBox(height: 6),
-          const Text(
-            'Worship and fellowship together as one congregation.',
-          ),
-          const SizedBox(height: 20),
-          serviceCard(
-            icon: Icons.church_outlined,
-            title: 'Sunday Service',
-            sessions: [
-              ('First Service', '06:30'),
-              ('Second Service', '09:30'),
-            ],
-          ),
-          serviceCard(
-            icon: Icons.menu_book_outlined,
-            title: 'Wednesday Service',
-            sessions: [
-              ('Midweek Service', '15:00'),
-            ],
-          ),
-          fellowshipCard(),
-        ],
+              ],
+            ),
+            const SizedBox(height: 14),
+            Divider(color: colors.outlineVariant),
+            const SizedBox(height: 6),
+            ...sessions.map(
+              (session) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 7),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        session.$1,
+                        style: Theme.of(context).textTheme.bodyMedium
+                            ?.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 11,
+                        vertical: 5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: colors.primaryContainer,
+                        borderRadius: BorderRadius.circular(AppRadii.pill),
+                      ),
+                      child: Text(
+                        session.$2,
+                        style: Theme.of(context).textTheme.labelMedium
+                            ?.copyWith(
+                              color: colors.onPrimaryContainer,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: .4,
+                            ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FellowshipCard extends StatelessWidget {
+  const _FellowshipCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    const fellowships = [
+      ("Men's Fellowship", 'Brothers growing in the Word'),
+      ("Women's Fellowship", 'Sisters serving together'),
+      ('Youth Fellowship', 'Young people walking in faith'),
+    ];
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 16, 18, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const _TintIcon(icon: Icons.groups_2_outlined),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Fellowships',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Vigwirizano',
+                        style: Theme.of(context).textTheme.bodySmall
+                            ?.copyWith(color: colors.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            ...fellowships.map(
+              (fellowship) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.people_outline_rounded,
+                      size: 18,
+                      color: colors.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            fellowship.$1,
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          Text(
+                            fellowship.$2,
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(
+                                  color: colors.onSurfaceVariant,
+                                  fontSize: 11,
+                                ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -4036,52 +5662,83 @@ class _HistoryMilestone extends StatelessWidget {
     required this.year,
     required this.title,
     required this.description,
+    this.isLast = false,
   });
 
   final String year;
   final String title;
   final String description;
+  final bool isLast;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+    return IntrinsicHeight(
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Container(
-            width: 62,
-            padding: const EdgeInsets.symmetric(vertical: 9),
-            decoration: BoxDecoration(
-              color: colors.primaryContainer,
-              borderRadius: BorderRadius.circular(13),
-            ),
-            child: Text(
-              year,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: colors.onPrimaryContainer,
-                fontWeight: FontWeight.w900,
-                fontSize: 12,
-              ),
+          SizedBox(
+            width: 24,
+            child: Column(
+              children: [
+                const SizedBox(height: 22),
+                Container(
+                  width: 11,
+                  height: 11,
+                  decoration: BoxDecoration(
+                    color: colors.secondary,
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: colors.secondary.withValues(alpha: .25),
+                      width: 3,
+                      strokeAlign: BorderSide.strokeAlignOutside,
+                    ),
+                  ),
+                ),
+                if (!isLast)
+                  Expanded(
+                    child: Container(
+                      width: 1.5,
+                      margin: const EdgeInsets.only(top: 6),
+                      color: colors.outlineVariant,
+                    ),
+                  ),
+              ],
             ),
           ),
           const SizedBox(width: 12),
           Expanded(
-            child: Card(
-              child: Padding(
-                padding: const EdgeInsets.all(15),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                    const SizedBox(height: 5),
-                    Text(description),
-                  ],
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 15),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        year.toUpperCase(),
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: colors.secondary,
+                          letterSpacing: 1.6,
+                        ),
+                      ),
+                      const SizedBox(height: 5),
+                      Text(
+                        title,
+                        style: Theme.of(context).textTheme.titleSmall
+                            ?.copyWith(fontSize: 14),
+                      ),
+                      const SizedBox(height: 5),
+                      Text(
+                        description,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: colors.onSurfaceVariant,
+                          height: 1.55,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -4097,69 +5754,189 @@ class ChurchHistoryPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(title: const Text('Church history')),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          Image.asset(
-            'assets/logo1.png',
-            height: 150,
-            errorBuilder: (_, _, _) => const Icon(Icons.church, size: 120),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'The Reformed Church in Zambia',
-            style: Theme.of(context).textTheme.headlineSmall
-                ?.copyWith(fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(height: 12),
-          const Text(
-            'The Reformed Church in Zambia (RCZ) grew from a mission movement into an independent Zambian church. Its story is connected with the witness of missionaries, African evangelists and generations of local Christians who established congregations and ministries across the country.',
-          ),
-          const SizedBox(height: 18),
-          _HistoryMilestone(
-            year: '1899',
-            title: 'The beginning at Magwero',
-            description: 'On 5 July 1899, mission work associated with the Dutch Reformed Church of the Orange Free State was established at Magwero in present-day Eastern Province.',
-          ),
-          _HistoryMilestone(
-            year: '1943',
-            title: 'A developing church structure',
-            description: 'The growing work was organised into a synod within the mission church structure, helping congregations develop a more coordinated church life.',
-          ),
-          _HistoryMilestone(
-            year: '1957',
-            title: 'African Reformed Church',
-            description: 'The name African Reformed Church was adopted as the church continued to develop its identity and leadership.',
-          ),
-          _HistoryMilestone(
-            year: '1966',
-            title: 'Autonomy',
-            description: 'On 23 April 1966, the church attained autonomy and continued its ministry as a self-governing church in Zambia.',
-          ),
-          _HistoryMilestone(
-            year: 'Today',
-            title: 'A church serving communities',
-            description: 'The RCZ continues through worship, discipleship, evangelism, education, pastoral care and community service in different parts of Zambia.',
-          ),
-          const SizedBox(height: 18),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.public_outlined),
-              title: const Text('Read the reference'),
-              subtitle: const Text(
-                'World Council of Churches / public history summary',
-              ),
-              onTap: () => launchUrl(
-                Uri.parse(
-                  'https://www.oikoumene.org/member-churches/reformed-church-in-zambia',
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: ListView(
+            physics: const BouncingScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
+            children: [
+              Container(
+                clipBehavior: Clip.antiAlias,
+                padding: const EdgeInsets.all(22),
+                decoration: BoxDecoration(
+                  gradient: AppDecor.heroGradient(context),
+                  borderRadius: BorderRadius.circular(24),
                 ),
-                mode: LaunchMode.externalApplication,
+                child: Stack(
+                  children: [
+                    Positioned(
+                      right: -20,
+                      top: -26,
+                      child: Icon(
+                        Icons.auto_stories_rounded,
+                        size: 130,
+                        color: Colors.white.withValues(alpha: .06),
+                      ),
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          width: 62,
+                          height: 62,
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: AppColors.navy,
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Image.asset(
+                            'assets/logo_white.png',
+                            errorBuilder: (_, _, _) => Icon(
+                              Icons.church_rounded,
+                              color: colors.primary,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                        const Text(
+                          'A story of faith,\nservice and grace.',
+                          style: TextStyle(
+                            fontFamily: 'SourceSerif4',
+                            fontSize: 26,
+                            height: 1.15,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white,
+                            letterSpacing: -.2,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'The Reformed Church in Zambia',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            color: Colors.white.withValues(alpha: .72),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-            ),
+              const SizedBox(height: 20),
+              Text(
+                'The Reformed Church in Zambia (RCZ) grew from a mission movement '
+                'into an independent Zambian church. Its story is connected with '
+                'the witness of missionaries, African evangelists and generations '
+                'of local Christians who established congregations and ministries '
+                'across the country.',
+                style: Theme.of(context).textTheme.bodyMedium
+                    ?.copyWith(color: colors.onSurfaceVariant, height: 1.65),
+              ),
+              const SizedBox(height: 24),
+              Text('Milestones', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 4),
+              Text(
+                'Moments that shaped the church',
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(color: colors.onSurfaceVariant),
+              ),
+              const SizedBox(height: 16),
+              const _HistoryMilestone(
+                year: '1899',
+                title: 'The beginning at Magwero',
+                description:
+                    'On 5 July 1899, mission work associated with the Dutch '
+                    'Reformed Church of the Orange Free State was established '
+                    'at Magwero in present-day Eastern Province.',
+              ),
+              const _HistoryMilestone(
+                year: '1943',
+                title: 'A developing church structure',
+                description:
+                    'The growing work was organised into a synod within the '
+                    'mission church structure, helping congregations develop a '
+                    'more coordinated church life.',
+              ),
+              const _HistoryMilestone(
+                year: '1957',
+                title: 'African Reformed Church',
+                description:
+                    'The name African Reformed Church was adopted as the church '
+                    'continued to develop its identity and leadership.',
+              ),
+              const _HistoryMilestone(
+                year: '1966',
+                title: 'Autonomy',
+                description:
+                    'On 23 April 1966, the church attained autonomy and '
+                    'continued its ministry as a self-governing church in Zambia.',
+              ),
+              const _HistoryMilestone(
+                year: 'Today',
+                title: 'A church serving communities',
+                description:
+                    'The RCZ continues through worship, discipleship, '
+                    'evangelism, education, pastoral care and community service '
+                    'in different parts of Zambia.',
+                isLast: true,
+              ),
+              const SizedBox(height: 12),
+              Card(
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: () => launchUrl(
+                    Uri.parse(
+                      'https://www.oikoumene.org/member-churches/reformed-church-in-zambia',
+                    ),
+                    mode: LaunchMode.externalApplication,
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      children: [
+                        const _TintIcon(
+                          icon: Icons.public_outlined,
+                          size: 38,
+                          radius: 11,
+                        ),
+                        const SizedBox(width: 13),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Read the reference',
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'World Council of Churches / public history summary',
+                                style: Theme.of(context).textTheme.bodySmall
+                                    ?.copyWith(
+                                      color: colors.onSurfaceVariant,
+                                      fontSize: 11.5,
+                                    ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Icon(
+                          Icons.open_in_new_rounded,
+                          size: 17,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -4181,43 +5958,73 @@ class AppPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return SafeArea(
+      bottom: false,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 24, 20, 18),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        style: Theme.of(context).textTheme.headlineSmall
-                            ?.copyWith(fontWeight: FontWeight.w800),
+          Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 860),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            style: Theme.of(context).textTheme.headlineSmall,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            subtitle,
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(color: colors.onSurfaceVariant),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 4),
-                      Text(subtitle),
-                    ],
-                  ),
+                    ),
+                    ...actions,
+                    if (actions.isNotEmpty) const SizedBox(width: 4),
+                    Container(
+                      width: 42,
+                      height: 42,
+                      padding: const EdgeInsets.all(5),
+                      decoration: BoxDecoration(
+                        color: AppColors.navy,
+                        borderRadius: BorderRadius.circular(13),
+                        border: Border.all(color: colors.outlineVariant),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(9),
+                        child: Image.asset(
+                          'assets/logo_white.png',
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) => Icon(
+                            Icons.church_rounded,
+                            size: 20,
+                            color: colors.primary,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                ...actions,
-                const SizedBox(width: 14),
-                ClipOval(
-                  child: Image.asset(
-                    'assets/logo_color.png',
-                    width: 42,
-                    height: 42,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) => const Icon(Icons.church),
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
-          Expanded(child: child),
+          Expanded(
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 860),
+                child: child,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -4243,13 +6050,21 @@ class _DashboardMetric extends StatelessWidget {
         padding: const EdgeInsets.all(14),
         child: Row(
           children: [
-            Icon(icon, color: Theme.of(context).colorScheme.primary),
-            const SizedBox(width: 10),
+            _TintIcon(icon: icon, size: 36, radius: 10),
+            const SizedBox(width: 11),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(label, style: Theme.of(context).textTheme.labelMedium),
+                  Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontSize: 10.5,
+                    ),
+                  ),
                   const SizedBox(height: 3),
                   Text(
                     value,
@@ -4268,48 +6083,484 @@ class _DashboardMetric extends StatelessWidget {
   }
 }
 
-class _VerseCard extends StatelessWidget {
-  const _VerseCard({required this.verse});
+class _HomeHeader extends StatelessWidget {
+  const _HomeHeader({
+    required this.initials,
+    required this.onOpenNotices,
+    required this.onOpenProfile,
+    this.noticeCount = 0,
+  });
 
-  final (String, String, String) verse;
+  final String initials;
+  final VoidCallback onOpenNotices;
+  final VoidCallback onOpenProfile;
+  final int noticeCount;
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      color: Theme.of(context).colorScheme.primaryContainer,
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 700),
-          transitionBuilder: (child, animation) =>
-              FadeTransition(opacity: animation, child: child),
+    final colors = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Container(
+          width: 46,
+          height: 46,
+          padding: const EdgeInsets.all(5),
+          decoration: BoxDecoration(
+            color: AppColors.navy,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: colors.outlineVariant),
+            boxShadow: AppDecor.softShadow(context),
+          ),
+          child: Image.asset(
+            'assets/logo_white.png',
+            errorBuilder: (_, _, _) =>
+                Icon(Icons.church_rounded, color: colors.primary),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
           child: Column(
-            key: ValueKey(verse.$2),
             crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'RCZ KANYAMA',
+                style: Theme.of(context).textTheme.labelSmall
+                    ?.copyWith(color: colors.primary, letterSpacing: 2.2),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                'Reformed Church in Zambia',
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(color: colors.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+        Badge(
+          isLabelVisible: noticeCount > 0,
+          label: Text(
+            noticeCount > 99 ? '99+' : '$noticeCount',
+            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800),
+          ),
+          child: _HeaderIconButton(
+            icon: Icons.notifications_none_rounded,
+            tooltip: 'Church notices',
+            onTap: onOpenNotices,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Tooltip(
+          message: 'Your profile',
+          child: GestureDetector(
+            onTap: onOpenProfile,
+            child: Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                gradient: AppDecor.heroGradient(context),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: colors.primary.withValues(alpha: .2)),
+              ),
+              alignment: Alignment.center,
+              child: Text(
+                initials,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 13,
+                  letterSpacing: .4,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _HeaderIconButton extends StatelessWidget {
+  const _HeaderIconButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(13),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(13),
+          child: Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(13),
+              border: Border.all(color: colors.outlineVariant),
+            ),
+            child: Icon(icon, size: 21, color: colors.onSurfaceVariant),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MetaPill extends StatelessWidget {
+  const _MetaPill({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+      decoration: BoxDecoration(
+        color: colors.primaryContainer.withValues(alpha: .6),
+        borderRadius: BorderRadius.circular(AppRadii.pill),
+        border: Border.all(color: colors.primary.withValues(alpha: .08)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: colors.onPrimaryContainer),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+              color: colors.onPrimaryContainer,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SectionHeading extends StatelessWidget {
+  const _SectionHeading({
+    required this.eyebrow,
+    required this.title,
+    this.subtitle,
+  });
+
+  final String eyebrow;
+  final String title;
+  final String? subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          eyebrow,
+          style: Theme.of(context).textTheme.labelSmall
+              ?.copyWith(color: colors.secondary, letterSpacing: 1.7),
+        ),
+        const SizedBox(height: 5),
+        Text(title, style: Theme.of(context).textTheme.titleLarge),
+        if (subtitle != null) ...[
+          const SizedBox(height: 3),
+          Text(
+            subtitle!,
+            style: Theme.of(context).textTheme.bodySmall
+                ?.copyWith(color: colors.onSurfaceVariant),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _TintIcon extends StatelessWidget {
+  const _TintIcon({
+    required this.icon,
+    this.size = 40,
+    this.radius = 12,
+    this.background,
+    this.foreground,
+  });
+
+  final IconData icon;
+  final double size;
+  final double radius;
+  final Color? background;
+  final Color? foreground;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: background ?? colors.primaryContainer,
+        borderRadius: BorderRadius.circular(radius),
+      ),
+      alignment: Alignment.center,
+      child: Icon(icon, size: size * .5, color: foreground ?? colors.primary),
+    );
+  }
+}
+
+class _VerseShowcase extends StatelessWidget {
+  const _VerseShowcase({
+    required this.verse,
+    required this.index,
+    required this.total,
+    required this.onNext,
+  });
+
+  final (String, String, String) verse;
+  final int index;
+  final int total;
+  final VoidCallback onNext;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        gradient: AppDecor.heroGradient(context),
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.navyDeep.withValues(alpha: .22),
+            blurRadius: 28,
+            offset: const Offset(0, 14),
+          ),
+        ],
+      ),
+      child: Stack(
+        children: [
+          Positioned(
+            right: -18,
+            top: -26,
+            child: Icon(
+              Icons.format_quote_rounded,
+              size: 150,
+              color: Colors.white.withValues(alpha: .06),
+            ),
+          ),
+          Positioned(
+            left: 0,
+            top: 0,
+            bottom: 0,
+            child: Container(width: 3, color: AppColors.gold),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(22, 20, 16, 20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(width: 18, height: 2, color: AppColors.gold),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'VERSE FOR TODAY',
+                          maxLines: 1,
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(
+                                color: AppColors.goldLight,
+                                letterSpacing: 1.8,
+                              ),
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '${(index + 1).toString().padLeft(2, '0')} / '
+                      '${total.toString().padLeft(2, '0')}',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: Colors.white.withValues(alpha: .45),
+                        letterSpacing: .8,
+                      ),
+                    ),
+                    const SizedBox(width: 2),
+                    IconButton(
+                      tooltip: 'Next verse',
+                      onPressed: onNext,
+                      visualDensity: VisualDensity.compact,
+                      style: IconButton.styleFrom(
+                        foregroundColor: Colors.white70,
+                        minimumSize: const Size(34, 34),
+                        padding: const EdgeInsets.all(6),
+                      ),
+                      icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                AnimatedSize(
+                  duration: const Duration(milliseconds: 350),
+                  curve: Curves.easeOutCubic,
+                  alignment: Alignment.topCenter,
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 450),
+                    switchInCurve: Curves.easeOut,
+                    switchOutCurve: Curves.easeIn,
+                    layoutBuilder: (currentChild, previousChildren) => Stack(
+                      alignment: AlignmentDirectional.topStart,
+                      children: [?currentChild],
+                    ),
+                    transitionBuilder: (child, animation) =>
+                        FadeTransition(opacity: animation, child: child),
+                    child: Column(
+                      key: ValueKey(verse.$2),
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          verse.$1,
+                          style: const TextStyle(
+                            fontFamily: 'SourceSerif4',
+                            fontSize: 22,
+                            fontStyle: FontStyle.italic,
+                            height: 1.42,
+                            letterSpacing: .1,
+                            color: Colors.white,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          verse.$3,
+                          style: TextStyle(
+                            fontFamily: 'SourceSerif4',
+                            fontSize: 14,
+                            fontStyle: FontStyle.italic,
+                            height: 1.5,
+                            color: Colors.white.withValues(alpha: .7),
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                        Row(
+                          children: [
+                            Text(
+                              verse.$2.toUpperCase(),
+                              style: Theme.of(context).textTheme.labelSmall
+                                  ?.copyWith(
+                                    color: AppColors.goldLight,
+                                    letterSpacing: 1.6,
+                                  ),
+                            ),
+                            const Spacer(),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: List.generate(total, (dot) {
+                                final active = dot == index;
+                                return AnimatedContainer(
+                                  duration: const Duration(milliseconds: 250),
+                                  width: active ? 14 : 5,
+                                  height: 5,
+                                  margin: const EdgeInsets.only(left: 5),
+                                  decoration: BoxDecoration(
+                                    color: active
+                                        ? AppColors.goldLight
+                                        : Colors.white.withValues(alpha: .22),
+                                    borderRadius: BorderRadius.circular(99),
+                                  ),
+                                );
+                              }),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ServiceTimesCard extends StatelessWidget {
+  const _ServiceTimesCard({required this.onOpenEvents});
+
+  final VoidCallback onOpenEvents;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onOpenEvents,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+          child: Column(
             children: [
               Row(
                 children: [
-                  Icon(
-                    Icons.auto_stories_outlined,
-                    color: Theme.of(context).colorScheme.primary,
+                  _TintIcon(icon: Icons.church_rounded),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Sunday worship',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Come and worship with us',
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: colors.onSurfaceVariant),
+                        ),
+                      ],
+                    ),
                   ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Verse for today',
-                    style: Theme.of(context).textTheme.labelLarge,
+                  Icon(
+                    Icons.arrow_forward_ios_rounded,
+                    size: 14,
+                    color: colors.onSurfaceVariant,
                   ),
                 ],
               ),
-              const SizedBox(height: 14),
-              Text(
-                verse.$1,
-                style: Theme.of(context).textTheme.titleMedium
-                    ?.copyWith(fontStyle: FontStyle.italic, height: 1.4),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                verse.$2,
-                style: const TextStyle(fontWeight: FontWeight.w700),
+              const SizedBox(height: 16),
+              Divider(color: colors.outlineVariant),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: _ServiceTime(
+                      label: 'FIRST SERVICE',
+                      time: '06:30',
+                      suffix: 'AM',
+                    ),
+                  ),
+                  Container(width: 1, height: 44, color: colors.outlineVariant),
+                  Expanded(
+                    child: _ServiceTime(
+                      label: 'SECOND SERVICE',
+                      time: '09:30',
+                      suffix: 'AM',
+                      alignEnd: true,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -4319,18 +6570,77 @@ class _VerseCard extends StatelessWidget {
   }
 }
 
-class _ActionGrid extends StatelessWidget {
-  const _ActionGrid({required this.onOpenPage});
+class _ServiceTime extends StatelessWidget {
+  const _ServiceTime({
+    required this.label,
+    required this.time,
+    required this.suffix,
+    this.alignEnd = false,
+  });
+
+  final String label;
+  final String time;
+  final String suffix;
+  final bool alignEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: alignEnd
+          ? CrossAxisAlignment.end
+          : CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+            color: colors.onSurfaceVariant,
+            letterSpacing: 1.2,
+            fontSize: 9.5,
+          ),
+        ),
+        const SizedBox(height: 5),
+        Row(
+          mainAxisAlignment: alignEnd
+              ? MainAxisAlignment.end
+              : MainAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            Text(
+              time,
+              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                color: colors.primary,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.8,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Text(
+              suffix,
+              style: Theme.of(context).textTheme.labelSmall
+                  ?.copyWith(color: colors.onSurfaceVariant, letterSpacing: .6),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _QuickActionGrid extends StatelessWidget {
+  const _QuickActionGrid({required this.onOpenPage});
 
   final ValueChanged<int> onOpenPage;
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     final actions = [
-      (Icons.play_circle_outline, 'Watch sermons', 1),
-      (Icons.edit_note_outlined, 'Write a note', 3),
-      (Icons.menu_book_outlined, 'Open Nyimbo', 2),
-      (Icons.campaign_outlined, 'Church notices', 4),
+      (Icons.play_circle_outline_rounded, 'Sermons', 'Watch and listen', 1),
+      (Icons.menu_book_outlined, 'Nyimbo', 'Hymnbook', 2),
+      (Icons.edit_note_outlined, 'Notes', 'Your reflections', 3),
+      (Icons.campaign_outlined, 'Notices', 'From the office', 4),
     ];
     return GridView.builder(
       shrinkWrap: true,
@@ -4338,40 +6648,53 @@ class _ActionGrid extends StatelessWidget {
       itemCount: actions.length,
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 2,
-        mainAxisSpacing: 12,
-        crossAxisSpacing: 12,
-        childAspectRatio: 1.75,
+        mainAxisSpacing: 10,
+        crossAxisSpacing: 10,
+        childAspectRatio: 1.95,
       ),
       itemBuilder: (_, index) {
         final action = actions[index];
-        return TweenAnimationBuilder<double>(
-          tween: Tween(begin: .96, end: 1),
-          duration: Duration(milliseconds: 220 + index * 45),
-          curve: Curves.easeOutCubic,
-          builder: (context, scale, child) => Transform.scale(
-            scale: scale,
-            child: Card(
-              child: InkWell(
-                borderRadius: BorderRadius.circular(20),
-                onTap: () => onOpenPage(action.$3),
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        action.$1,
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        action.$2,
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                    ],
+        return Card(
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: () => onOpenPage(action.$4),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
+                children: [
+                  _TintIcon(icon: action.$1, size: 36, radius: 11),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          action.$2,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          action.$3,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(
+                                color: colors.onSurfaceVariant,
+                                fontSize: 11,
+                              ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    size: 17,
+                    color: colors.onSurfaceVariant.withValues(alpha: .6),
+                  ),
+                ],
               ),
             ),
           ),
@@ -4381,36 +6704,248 @@ class _ActionGrid extends StatelessWidget {
   }
 }
 
-class _InfoCard extends StatelessWidget {
-  const _InfoCard({
-    required this.icon,
-    required this.title,
-    required this.value,
+class _BiblePromoCard extends StatelessWidget {
+  const _BiblePromoCard({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: Ink(
+        decoration: BoxDecoration(
+          gradient: AppDecor.heroGradient(context),
+          borderRadius: BorderRadius.circular(22),
+        ),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(22),
+          child: Stack(
+            clipBehavior: Clip.antiAlias,
+            children: [
+              Positioned(
+                right: -12,
+                bottom: -18,
+                child: Icon(
+                  Icons.auto_stories_rounded,
+                  size: 124,
+                  color: Colors.white.withValues(alpha: .07),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'SCRIPTURE LIBRARY',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: AppColors.goldLight,
+                        letterSpacing: 1.8,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'The Word,\nalways with you.',
+                      style: TextStyle(
+                        fontFamily: 'SourceSerif4',
+                        fontSize: 26,
+                        height: 1.14,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white,
+                        letterSpacing: -.2,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Read the Bible in Chichewa and English — available '
+                      'offline once downloaded.',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        height: 1.5,
+                        color: Colors.white.withValues(alpha: .72),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 9,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: .12),
+                        borderRadius: BorderRadius.circular(AppRadii.pill),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: .14),
+                        ),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.menu_book_rounded,
+                            size: 15,
+                            color: Colors.white,
+                          ),
+                          SizedBox(width: 7),
+                          Text(
+                            'Open Bible',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 12.5,
+                            ),
+                          ),
+                          SizedBox(width: 6),
+                          Icon(
+                            Icons.arrow_forward_rounded,
+                            size: 15,
+                            color: Colors.white,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ExploreChurchCard extends StatelessWidget {
+  const _ExploreChurchCard({
+    required this.onOpenNotices,
+    required this.onOpenEvents,
+    required this.onOpenHistory,
   });
 
-  final IconData icon;
-  final String title;
-  final String value;
+  final VoidCallback onOpenNotices;
+  final VoidCallback onOpenEvents;
+  final VoidCallback onOpenHistory;
 
   @override
   Widget build(BuildContext context) {
     return Card(
-      color: Theme.of(context).colorScheme.secondaryContainer,
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          _ExploreTile(
+            icon: Icons.campaign_outlined,
+            title: 'Church announcements',
+            subtitle: 'Official updates from the Secretariat',
+            onTap: onOpenNotices,
+          ),
+          const Divider(indent: 68, endIndent: 16),
+          _ExploreTile(
+            icon: Icons.event_available_outlined,
+            title: 'Church events',
+            subtitle: 'Services, prayer and fellowship',
+            onTap: onOpenEvents,
+          ),
+          const Divider(indent: 68, endIndent: 16),
+          _ExploreTile(
+            icon: Icons.history_edu_outlined,
+            title: 'Our story',
+            subtitle: 'Discover the Reformed Church in Zambia',
+            onTap: onOpenHistory,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ExploreTile extends StatelessWidget {
+  const _ExploreTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        padding: const EdgeInsets.fromLTRB(16, 13, 14, 13),
+        child: Row(
           children: [
-            Icon(icon),
-            const SizedBox(height: 14),
-            Text(title),
-            Text(
-              value,
-              style: Theme.of(context).textTheme.headlineSmall
-                  ?.copyWith(fontWeight: FontWeight.w800),
+            _TintIcon(icon: icon, size: 38, radius: 11),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall
+                        ?.copyWith(color: colors.onSurfaceVariant),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.chevron_right_rounded,
+              size: 20,
+              color: colors.onSurfaceVariant.withValues(alpha: .7),
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _AboutChurchCard extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: ExpansionTile(
+        leading: const _TintIcon(icon: Icons.church_outlined, size: 38),
+        title: Text(
+          'About our church',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        subtitle: Text(
+          'Worship, fellowship and service',
+          style: Theme.of(context).textTheme.bodySmall
+              ?.copyWith(color: colors.onSurfaceVariant),
+        ),
+        children: [
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'RCZ Kanyama is a Reformed Christian congregation in Lusaka. '
+              'We gather to worship God, learn from Scripture, encourage one '
+              'another and serve our community. You are always welcome.',
+              style: Theme.of(context).textTheme.bodyMedium
+                  ?.copyWith(color: colors.onSurfaceVariant, height: 1.6),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -4429,24 +6964,204 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Center(
       child: Padding(
-        padding: const EdgeInsets.all(28),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, size: 58, color: Theme.of(context).colorScheme.primary),
-            const SizedBox(height: 16),
-            Text(
-              title,
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 8),
-            Text(message, textAlign: TextAlign.center),
-          ],
+        padding: const EdgeInsets.all(24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 66,
+                height: 66,
+                decoration: BoxDecoration(
+                  color: colors.primaryContainer,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: colors.primary.withValues(alpha: .08),
+                  ),
+                ),
+                child: Icon(icon, size: 29, color: colors.primary),
+              ),
+              const SizedBox(height: 18),
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 7),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyMedium
+                    ?.copyWith(color: colors.onSurfaceVariant, height: 1.55),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 }
+
+
+class _OwnerAdminTile extends StatefulWidget {
+  const _OwnerAdminTile();
+
+  @override
+  State<_OwnerAdminTile> createState() => _OwnerAdminTileState();
+}
+
+class _OwnerAdminTileState extends State<_OwnerAdminTile> {
+  bool? _isOwner;
+  bool _checking = false;
+  StreamSubscription<AuthState>? _authSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _authSubscription = Supabase.instance.client.auth.onAuthStateChange.listen(
+      (_) => unawaited(_check()),
+    );
+    unawaited(_check());
+  }
+
+  Future<void> _check() async {
+    if (_checking) return;
+    _checking = true;
+    if (mounted) setState(() => _isOwner = null);
+    try {
+      final result = await Supabase.instance.client.rpc('is_owner_admin');
+      if (!mounted) return;
+      setState(() => _isOwner = result == true);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isOwner = false);
+    } finally {
+      _checking = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _authSubscription?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isOwner != true) return const SizedBox.shrink();
+    return Column(
+      children: [
+        const _SettingsDivider(),
+        _SettingsTile(
+          icon: Icons.admin_panel_settings_rounded,
+          title: 'Admin Dashboard',
+          subtitle: 'Owner-only administration',
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => const AdminDashboardPage(),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+
+class _AndroidEmbedPlayer extends StatefulWidget {
+  const _AndroidEmbedPlayer({required this.videoId});
+  final String? videoId;
+
+  @override
+  State<_AndroidEmbedPlayer> createState() => _AndroidEmbedPlayerState();
+}
+
+class _AndroidEmbedPlayerState extends State<_AndroidEmbedPlayer> {
+  WebViewController? _webController;
+  Route<void>? _fullscreenRoute;
+
+  @override
+  void initState() {
+    super.initState();
+    _load(widget.videoId);
+  }
+
+  @override
+  void didUpdateWidget(covariant _AndroidEmbedPlayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.videoId != widget.videoId) _load(widget.videoId);
+  }
+
+  Future<void> _load(String? videoId) async {
+    if (videoId == null || videoId.isEmpty) return;
+
+    final controller = WebViewController();
+    _webController = controller;
+    final platformController = controller.platform;
+
+    if (platformController is AndroidWebViewController) {
+      platformController.setCustomWidgetCallbacks(
+        onShowCustomWidget: (Widget widget, OnHideCustomWidgetCallback _) {
+          if (!mounted || _fullscreenRoute?.isActive == true) return;
+
+          final route = MaterialPageRoute<void>(
+            builder: (BuildContext context) => widget,
+            fullscreenDialog: true,
+          );
+
+          _fullscreenRoute = route;
+
+          unawaited(
+            Navigator.of(context).push<void>(route).whenComplete(() {
+              if (identical(_fullscreenRoute, route)) {
+                _fullscreenRoute = null;
+              }
+            }),
+          );
+        },
+        onHideCustomWidget: () {
+          final route = _fullscreenRoute;
+
+          if (!mounted ||
+              route == null ||
+              !route.isActive ||
+              !route.isCurrent) {
+            return;
+          }
+
+          Navigator.of(context).pop();
+        },
+      );
+    }
+
+    if (mounted) setState(() {});
+
+    await controller.setJavaScriptMode(
+      JavaScriptMode.unrestricted,
+    );
+
+    await controller.loadRequest(
+      Uri.parse(
+        'https://www.youtube.com/embed/$videoId?playsinline=1&rel=0',
+      ),
+      headers: {
+        'Referer': 'https://rcz-kanyama-web.vercel.app/',
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = _webController;
+    if (c == null) {
+      return const Center(child: CircularProgressIndicator(color: Colors.white70));
+    }
+    return WebViewWidget(controller: c);
+  }
+}
+
+

@@ -28,9 +28,11 @@ class BibleCatalogTranslation {
   final int? packageBytes;
   final String? licenseLabel;
 
-  bool get isAvailable => status == 'available' && packagePath != null && sha256 != null;
+  bool get isAvailable =>
+      status == 'available' && packagePath != null && sha256 != null;
 
-  factory BibleCatalogTranslation.fromJson(Map<String, dynamic> json) => BibleCatalogTranslation(
+  factory BibleCatalogTranslation.fromJson(Map<String, dynamic> json) =>
+      BibleCatalogTranslation(
         id: json['id'] as String,
         name: json['name'] as String,
         shortName: json['shortName'] as String,
@@ -52,10 +54,18 @@ class BibleCatalogService {
   Future<List<BibleCatalogTranslation>> fetchCatalog() async {
     final bytes = await _client.storage.from(bucket).download('catalog.json');
     final decoded = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
-    if (decoded['catalogSchemaVersion'] != 1) throw const FormatException('Unsupported Bible catalogue version.');
+    if (decoded['catalogSchemaVersion'] != 1) {
+      throw const FormatException('Unsupported Bible catalogue version.');
+    }
     final items = decoded['translations'] as List<dynamic>;
-    return items.map((item) => BibleCatalogTranslation.fromJson(item as Map<String, dynamic>)).toList(growable: false);
+    return items
+        .map(
+          (item) =>
+              BibleCatalogTranslation.fromJson(item as Map<String, dynamic>),
+        )
+        .toList(growable: false);
   }
 
-  Future<Uint8List> downloadPackage(String packagePath) => _client.storage.from(bucket).download(packagePath);
+  Future<Uint8List> downloadPackage(String packagePath) =>
+      _client.storage.from(bucket).download(packagePath);
 }

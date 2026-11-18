@@ -1,12 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../../theme/app_theme.dart';
 import '../bible_service.dart';
 import '../data/bible_catalog_service.dart';
+import '../data/bible_download_manager.dart';
+import 'bible_bookmarks_page.dart';
 import 'bible_reader_pages.dart';
-
-const _bibleInk = Color(0xFF172B4D);
-const _bibleGold = Color(0xFFE5B85C);
+import 'bible_search_page.dart';
 
 class BibleHomePage extends StatefulWidget {
   const BibleHomePage({super.key});
@@ -16,9 +20,15 @@ class BibleHomePage extends StatefulWidget {
 }
 
 class _BibleHomePageState extends State<BibleHomePage> {
-  late final Future<BibleService> _serviceFuture = BibleService.create(
+  late Future<BibleService> _serviceFuture = BibleService.create(
     Supabase.instance.client,
   );
+
+  void _retry() {
+    setState(() {
+      _serviceFuture = BibleService.create(Supabase.instance.client);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -26,8 +36,9 @@ class _BibleHomePageState extends State<BibleHomePage> {
       future: _serviceFuture,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
-          return const _BibleErrorPage(
+          return _BibleErrorPage(
             message: 'The Bible library could not be opened on this device. Please try again.',
+            onRetry: _retry,
           );
         }
         if (!snapshot.hasData) return const _BibleLoadingPage();
@@ -48,32 +59,64 @@ class _BibleLoadingPage extends StatelessWidget {
 }
 
 class _BibleErrorPage extends StatelessWidget {
-  const _BibleErrorPage({required this.message});
+  const _BibleErrorPage({required this.message, this.onRetry});
   final String message;
+  final VoidCallback? onRetry;
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('The Bible')),
-    body: Center(
-      child: Padding(
-        padding: const EdgeInsets.all(28),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.menu_book_rounded, size: 52),
-            const SizedBox(height: 16),
-            const Text(
-              'We couldn’t open the Bible library',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
-              textAlign: TextAlign.center,
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Scaffold(
+      appBar: AppBar(title: const Text('The Bible')),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 66,
+                  height: 66,
+                  decoration: BoxDecoration(
+                    color: colors.primaryContainer,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Icon(
+                    Icons.menu_book_rounded,
+                    size: 29,
+                    color: colors.primary,
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Text(
+                  'We couldn’t open the Bible library',
+                  style: Theme.of(context).textTheme.titleLarge,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyMedium
+                      ?.copyWith(color: colors.onSurfaceVariant, height: 1.55),
+                ),
+                if (onRetry != null) ...[
+                  const SizedBox(height: 16),
+                  FilledButton.icon(
+                    onPressed: onRetry,
+                    icon: const Icon(Icons.refresh_rounded, size: 18),
+                    label: const Text('Try again'),
+                  ),
+                ],
+              ],
             ),
-            const SizedBox(height: 8),
-            Text(message, textAlign: TextAlign.center),
-          ],
+          ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _BibleLibraryView extends StatefulWidget {
@@ -91,11 +134,85 @@ class _BibleLibraryViewState extends State<_BibleLibraryView> {
   String? _error;
   String? _installingId;
   double _progress = 0;
+  BibleDownloadManager? _downloads;
+  int _lastBackgroundCompletion = 0;
 
   @override
   void initState() {
     super.initState();
     _refresh();
+    unawaited(_listenToDownloads());
+  }
+
+  @override
+  void dispose() {
+    _downloads?.removeListener(_onDownloadsChanged);
+    super.dispose();
+  }
+
+  Future<void> _listenToDownloads() async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final manager = await BibleDownloadManager.create(
+        client: Supabase.instance.client,
+        preferences: preferences,
+      );
+      if (!mounted) return;
+      manager.addListener(_onDownloadsChanged);
+      setState(() => _downloads = manager);
+      unawaited(manager.startIfNeeded());
+    } catch (error) {
+      debugPrint('Bible download manager could not start: $error');
+    }
+  }
+
+  void _onDownloadsChanged() {
+    if (!mounted) return;
+    final manager = _downloads;
+    if (manager != null &&
+        manager.completed != _lastBackgroundCompletion &&
+        !manager.running) {
+      _lastBackgroundCompletion = manager.completed;
+      unawaited(_reloadInstalled());
+    }
+    setState(() {});
+  }
+
+  Future<void> _reloadInstalled() async {
+    try {
+      final installedIds = await widget.service.store.installedTranslationIds();
+      final localTranslations = <BibleCatalogTranslation>[];
+      for (final id in installedIds) {
+        try {
+          final manifest = await widget.service.repository.translation(id);
+          localTranslations.add(
+            BibleCatalogTranslation(
+              id: manifest.id,
+              name: manifest.name,
+              shortName: manifest.shortName,
+              languageCode: manifest.languageCode,
+              status: 'available',
+              version: manifest.version,
+              licenseLabel: manifest.license,
+            ),
+          );
+        } catch (_) {
+          // Keep the rest of the library usable if one manifest is damaged.
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _installed = installedIds;
+        final merged = <String, BibleCatalogTranslation>{
+          for (final translation in _translations) translation.id: translation,
+          for (final translation in localTranslations)
+            translation.id: translation,
+        };
+        _translations = merged.values.toList(growable: false);
+      });
+    } catch (error) {
+      debugPrint('Installed Bible refresh failed: $error');
+    }
   }
 
   Future<void> _refresh() async {
@@ -171,7 +288,21 @@ class _BibleLibraryViewState extends State<_BibleLibraryView> {
   Future<void> _install(BibleCatalogTranslation translation) async {
     if (!translation.isAvailable ||
         translation.packagePath == null ||
-        translation.sha256 == null){
+        translation.sha256 == null) {
+      return;
+    }
+    if (_downloads?.running ?? false) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'A Bible download is already in progress. Please wait.',
+          ),
+        ),
+      );
+      return;
+    }
+    if (_installingId != null ||
+        _downloads?.activeTranslationId == translation.id) {
       return;
     }
     setState(() {
@@ -188,7 +319,8 @@ class _BibleLibraryViewState extends State<_BibleLibraryView> {
         },
       );
       widget.service.repository.clearCache();
-      if (!mounted){
+      await _downloads?.allowAutomaticDownload(translation.id);
+      if (!mounted) {
         return;
       }
       setState(() {
@@ -208,8 +340,13 @@ class _BibleLibraryViewState extends State<_BibleLibraryView> {
     } catch (error) {
       if (!mounted) return;
       setState(() => _installingId = null);
+      debugPrint('Manual Bible download failed: $error');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Download could not be completed: $error')),
+        const SnackBar(
+          content: Text(
+            'The download could not be completed. Check your connection and free storage, then try again.',
+          ),
+        ),
       );
     }
   }
@@ -237,6 +374,7 @@ class _BibleLibraryViewState extends State<_BibleLibraryView> {
     if (confirmed != true) return;
     await widget.service.installer.uninstall(translation.id);
     widget.service.repository.clearCache();
+    await _downloads?.skipAutomaticDownload(translation.id);
     if (mounted) setState(() => _installed.remove(translation.id));
   }
 
@@ -257,11 +395,26 @@ class _BibleLibraryViewState extends State<_BibleLibraryView> {
     final colors = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'The Bible',
-          style: TextStyle(fontWeight: FontWeight.w800),
-        ),
+        title: const Text('The Bible'),
         actions: [
+          IconButton(
+            tooltip: 'Search the Bible',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => BibleSearchPage(service: widget.service),
+              ),
+            ),
+            icon: const Icon(Icons.search_rounded),
+          ),
+          IconButton(
+            tooltip: 'Bookmarked verses',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => BibleBookmarksPage(service: widget.service),
+              ),
+            ),
+            icon: const Icon(Icons.bookmarks_outlined),
+          ),
           IconButton(
             tooltip: 'Refresh library',
             onPressed: _loading ? null : _refresh,
@@ -271,95 +424,135 @@ class _BibleLibraryViewState extends State<_BibleLibraryView> {
       ),
       body: RefreshIndicator(
         onRefresh: _refresh,
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(18, 4, 18, 32),
-          children: [
-            _BibleHeroCard(installedCount: _installed.length),
-            const SizedBox(height: 22),
-            Row(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 860),
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(
+                parent: BouncingScrollPhysics(),
+              ),
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 32),
               children: [
-                Text(
-                  'Your Bible library',
-                  style: Theme.of(context).textTheme.titleLarge
-                      ?.copyWith(fontWeight: FontWeight.w800),
-                ),
-                const Spacer(),
-                if (!_loading)
-                  Text(
-                    '${_installed.length} downloaded',
-                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                      color: colors.primary,
-                      fontWeight: FontWeight.w700,
-                    ),
+                _BibleHeroCard(installedCount: _installed.length),
+                if (_downloads != null) ...[
+                  const SizedBox(height: 14),
+                  _BibleDownloadCard(
+                    manager: _downloads!,
+                    onRetry: () => unawaited(_downloads!.retryFailed()),
                   ),
-              ],
-            ),
-            const SizedBox(height: 5),
-            Text(
-              'Choose a translation and keep the Word close, even when you are offline.',
-              style: Theme.of(context).textTheme.bodyMedium
-                  ?.copyWith(color: colors.onSurfaceVariant),
-            ),
-            const SizedBox(height: 14),
-            if (_loading)
-              const Padding(
-                padding: EdgeInsets.all(32),
-                child: Center(child: CircularProgressIndicator()),
-              )
-            else if (_error != null)
-              _ErrorCard(message: _error!, onRetry: _refresh)
-            else if (_translations.isEmpty)
-              const _EmptyBibleLibraryCard()
-            else
-              ..._translations.map((translation) {
-                final installed = _installed.contains(translation.id);
-                final isInstalling = _installingId == translation.id;
-                return _TranslationCard(
-                  translation: translation,
-                  installed: installed,
-                  installing: isInstalling,
-                  progress: _progress,
-                  onRead: () => _open(translation),
-                  onDownload: () => _install(translation),
-                  onRemove: () => _remove(translation),
-                );
-              }),
-            const SizedBox(height: 10),
-            Card(
-              color: colors.surfaceContainerLow,
-              child: const Padding(
-                padding: EdgeInsets.all(16),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                ],
+                const SizedBox(height: 22),
+                Row(
                   children: [
-                    Icon(Icons.wifi_off_rounded),
-                    SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Read anywhere',
-                            style: TextStyle(fontWeight: FontWeight.w800),
-                          ),
-                          SizedBox(height: 4),
-                          Text(
-                            'Once a translation is downloaded, its books and chapters are stored on this device for offline reading.',
-                          ),
-                        ],
-                      ),
+                    Text(
+                      'Your Bible library',
+                      style: Theme.of(context).textTheme.titleLarge,
                     ),
+                    const Spacer(),
+                    if (!_loading)
+                      Text(
+                        '${_installed.length} downloaded',
+                        style: Theme.of(context).textTheme.labelMedium
+                            ?.copyWith(
+                              color: colors.primary,
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
                   ],
                 ),
-              ),
+                const SizedBox(height: 5),
+                Text(
+                  'Choose a translation and keep the Word close, even when you are offline.',
+                  style: Theme.of(context).textTheme.bodyMedium
+                      ?.copyWith(color: colors.onSurfaceVariant),
+                ),
+                const SizedBox(height: 14),
+                if (_loading)
+                  const Padding(
+                    padding: EdgeInsets.all(32),
+                    child: Center(child: CircularProgressIndicator()),
+                  )
+                else if (_error != null)
+                  _ErrorCard(message: _error!, onRetry: _refresh)
+                else if (_translations.isEmpty)
+                  const _EmptyBibleLibraryCard()
+                else
+                  ..._translations.map((translation) {
+                    final installed = _installed.contains(translation.id);
+                    final background =
+                        _downloads?.activeTranslationId == translation.id;
+                    final isInstalling =
+                        _installingId == translation.id || background;
+                    final canStartDownload =
+                        _installingId == null &&
+                        !(_downloads?.running ?? false);
+                    return _TranslationCard(
+                      translation: translation,
+                      installed: installed,
+                      installing: isInstalling,
+                      canDownload: canStartDownload,
+                      progress: background
+                          ? _downloads!.activeProgress
+                          : _progress,
+                      onRead: () => _open(translation),
+                      onDownload: () => _install(translation),
+                      onRemove: () => _remove(translation),
+                    );
+                  }),
+                const SizedBox(height: 10),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          width: 38,
+                          height: 38,
+                          decoration: BoxDecoration(
+                            color: colors.primaryContainer,
+                            borderRadius: BorderRadius.circular(11),
+                          ),
+                          child: Icon(
+                            Icons.wifi_off_rounded,
+                            size: 19,
+                            color: colors.primary,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Read anywhere',
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Once a translation is downloaded, its books and chapters are stored on this device for offline reading.',
+                                style: Theme.of(context).textTheme.bodySmall
+                                    ?.copyWith(
+                                      color: colors.onSurfaceVariant,
+                                      height: 1.55,
+                                    ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Translation availability depends on content and distribution permissions. Source and attribution notices are retained with each package.',
+                  style: Theme.of(context).textTheme.bodySmall
+                      ?.copyWith(color: colors.onSurfaceVariant),
+                ),
+              ],
             ),
-            const SizedBox(height: 12),
-            Text(
-              'Translation availability depends on content and distribution permissions. Source and attribution notices are retained with each package.',
-              style: Theme.of(context).textTheme.bodySmall
-                  ?.copyWith(color: colors.onSurfaceVariant),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -407,15 +600,11 @@ class _BibleHeroCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(28),
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [_bibleInk, Color(0xFF344F78), Color(0xFF526B8A)],
-        ),
+        borderRadius: BorderRadius.circular(24),
+        gradient: AppDecor.heroGradient(context),
         boxShadow: [
           BoxShadow(
-            color: _bibleInk.withValues(alpha: .18),
+            color: AppColors.navyDeep.withValues(alpha: .18),
             blurRadius: 24,
             offset: const Offset(0, 12),
           ),
@@ -442,13 +631,16 @@ class _BibleHeroCard extends StatelessWidget {
                 ),
                 decoration: BoxDecoration(
                   color: Colors.white.withValues(alpha: .13),
-                  borderRadius: BorderRadius.circular(30),
+                  borderRadius: BorderRadius.circular(AppRadii.pill),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: .12),
+                  ),
                 ),
                 child: const Text(
                   'SCRIPTURE • EVERY DAY',
                   style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 10,
+                    color: AppColors.goldLight,
+                    fontSize: 9.5,
                     letterSpacing: 1.5,
                     fontWeight: FontWeight.w800,
                   ),
@@ -458,20 +650,21 @@ class _BibleHeroCard extends StatelessWidget {
               const Text(
                 'Grow deeper\nin the Word.',
                 style: TextStyle(
+                  fontFamily: 'SourceSerif4',
                   color: Colors.white,
-                  fontSize: 29,
-                  height: 1.08,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: -.5,
+                  fontSize: 30,
+                  height: 1.1,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -.3,
                 ),
               ),
               const SizedBox(height: 10),
               Text(
                 'Read, reflect and carry Scripture with you wherever life takes you.',
                 style: TextStyle(
-                  color: Colors.white.withValues(alpha: .82),
+                  color: Colors.white.withValues(alpha: .78),
                   height: 1.45,
-                  fontSize: 13,
+                  fontSize: 12.5,
                 ),
               ),
               const SizedBox(height: 20),
@@ -479,7 +672,7 @@ class _BibleHeroCard extends StatelessWidget {
                 children: [
                   const Icon(
                     Icons.download_done_rounded,
-                    color: _bibleGold,
+                    color: AppColors.goldLight,
                     size: 18,
                   ),
                   const SizedBox(width: 7),
@@ -501,11 +694,156 @@ class _BibleHeroCard extends StatelessWidget {
   }
 }
 
+class _BibleDownloadCard extends StatelessWidget {
+  const _BibleDownloadCard({required this.manager, required this.onRetry});
+
+  final BibleDownloadManager manager;
+  final VoidCallback onRetry;
+
+  String get _status {
+    if (manager.running) {
+      final name = manager.activeTranslationName;
+      if (name != null) {
+        return 'Downloading $name… ${(manager.activeProgress * 100).round()}%';
+      }
+      return 'Checking your offline library…';
+    }
+    final failed = manager.failedTranslationIds.length;
+    if (failed > 0) {
+      return '$failed ${failed == 1 ? 'translation needs' : 'translations need'} another attempt.';
+    }
+    return manager.message ??
+        'Available translations download quietly when you are online.';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: colors.primaryContainer,
+                    borderRadius: BorderRadius.circular(11),
+                  ),
+                  child: Icon(
+                    Icons.cloud_download_outlined,
+                    size: 19,
+                    color: colors.primary,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Offline downloads',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        _status,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: colors.onSurfaceVariant,
+                          height: 1.45,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (manager.running)
+                  SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.4,
+                      value: manager.activeTranslationName == null
+                          ? null
+                          : manager.activeProgress,
+                    ),
+                  )
+                else if (manager.failedTranslationIds.isNotEmpty)
+                  IconButton(
+                    tooltip: 'Retry failed downloads',
+                    onPressed: onRetry,
+                    icon: const Icon(Icons.refresh_rounded, size: 20),
+                  ),
+              ],
+            ),
+            if (manager.running && manager.activeTranslationName != null) ...[
+              const SizedBox(height: 12),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(20),
+                child: LinearProgressIndicator(
+                  value: manager.activeProgress,
+                  minHeight: 5,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                manager.total > 0
+                    ? '${manager.completed} of ${manager.total} translations ready'
+                    : 'Preparing translations',
+                style: Theme.of(context).textTheme.labelSmall
+                    ?.copyWith(color: colors.onSurfaceVariant),
+              ),
+            ],
+            const SizedBox(height: 4),
+            SwitchListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              value: manager.autoDownloadEnabled,
+              onChanged: (value) => manager.setAutoDownloadEnabled(value),
+              title: Text(
+                'Download automatically',
+                style: Theme.of(context).textTheme.bodyMedium
+                    ?.copyWith(fontWeight: FontWeight.w600),
+              ),
+            ),
+            SwitchListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              value: manager.wifiOnly,
+              onChanged: manager.autoDownloadEnabled
+                  ? (value) => manager.setWifiOnly(value)
+                  : null,
+              title: Text(
+                'Wi-Fi only',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: manager.autoDownloadEnabled
+                      ? colors.onSurface
+                      : colors.onSurfaceVariant,
+                ),
+              ),
+              subtitle: Text(
+                'Protect mobile data on phones and tablets',
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(color: colors.onSurfaceVariant),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _TranslationCard extends StatelessWidget {
   const _TranslationCard({
     required this.translation,
     required this.installed,
     required this.installing,
+    required this.canDownload,
     required this.progress,
     required this.onRead,
     required this.onDownload,
@@ -514,6 +852,7 @@ class _TranslationCard extends StatelessWidget {
   final BibleCatalogTranslation translation;
   final bool installed;
   final bool installing;
+  final bool canDownload;
   final double progress;
   final VoidCallback onRead;
   final VoidCallback onDownload;
@@ -588,9 +927,9 @@ class _TranslationCard extends StatelessWidget {
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
                               color: installed
-                                  ? const Color(0xFF2E9D68)
+                                  ? colors.tertiary
                                   : available
-                                  ? _bibleGold
+                                  ? colors.secondary
                                   : colors.outline,
                             ),
                           ),
@@ -602,7 +941,7 @@ class _TranslationCard extends StatelessWidget {
                               letterSpacing: .8,
                               fontWeight: FontWeight.w800,
                               color: installed
-                                  ? const Color(0xFF258657)
+                                  ? colors.tertiary
                                   : colors.onSurfaceVariant,
                             ),
                           ),
@@ -642,7 +981,7 @@ class _TranslationCard extends StatelessWidget {
                       )
                     : available
                     ? OutlinedButton.icon(
-                        onPressed: onDownload,
+                        onPressed: canDownload ? onDownload : null,
                         icon: const Icon(Icons.download_rounded, size: 18),
                         label: Text(
                           'Download${translation.packageBytes == null ? '' : ' • ${(translation.packageBytes! / (1024 * 1024)).toStringAsFixed(1)} MB'}',
@@ -667,31 +1006,47 @@ class _ErrorCard extends StatelessWidget {
   final String message;
   final VoidCallback onRetry;
   @override
-  Widget build(BuildContext context) => Card(
-    child: Padding(
-      padding: const EdgeInsets.all(18),
-      child: Column(
-        children: [
-          const Icon(Icons.cloud_off_rounded, size: 34),
-          const SizedBox(height: 8),
-          const Text(
-            'Could not load the Bible library',
-            style: TextStyle(fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            message,
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: onRetry,
-            icon: const Icon(Icons.refresh),
-            label: const Text('Try again'),
-          ),
-        ],
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                color: colors.errorContainer,
+                borderRadius: BorderRadius.circular(17),
+              ),
+              child: Icon(
+                Icons.cloud_off_rounded,
+                size: 26,
+                color: colors.onErrorContainer,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Could not load the Bible library',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(color: colors.onSurfaceVariant, height: 1.5),
+            ),
+            const SizedBox(height: 14),
+            OutlinedButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh_rounded, size: 18),
+              label: const Text('Try again'),
+            ),
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 }

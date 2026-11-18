@@ -10,7 +10,11 @@ void main() {
     await tester.pumpWidget(RczKanyamaApp(preferences: preferences));
 
     expect(find.text('Welcome home'), findsOneWidget);
-    expect(find.text('What should we call you?'), findsOneWidget);
+    expect(
+      find.text('Tell us how you would like to be greeted.'),
+      findsOneWidget,
+    );
+    expect(find.text('Your name'), findsOneWidget);
     expect(find.text('Continue'), findsOneWidget);
   });
 }

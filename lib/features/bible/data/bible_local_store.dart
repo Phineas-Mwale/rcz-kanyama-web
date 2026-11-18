@@ -12,7 +12,8 @@ class BibleLocalStore implements BibleContentStore {
   BibleLocalStore._(this._database);
 
   final Database _database;
-  static final StoreRef<String, String> _records = StoreRef<String, String>.main();
+  static final StoreRef<String, String> _records =
+      StoreRef<String, String>.main();
 
   static Future<BibleLocalStore> open() async {
     final Database database;
@@ -44,7 +45,10 @@ class BibleLocalStore implements BibleContentStore {
 
   @override
   Future<bool> isTranslationInstalled(String translationId) async {
-    return await _records.record('${_prefix(translationId)}installed').get(_database) == '1';
+    return await _records
+            .record('${_prefix(translationId)}installed')
+            .get(_database) ==
+        '1';
   }
 
   @override
@@ -53,7 +57,9 @@ class BibleLocalStore implements BibleContentStore {
     final result = <String>[];
     for (final snapshot in snapshots) {
       final key = snapshot.key;
-      if (key.startsWith('translation/') && key.endsWith('/installed') && snapshot.value == '1') {
+      if (key.startsWith('translation/') &&
+          key.endsWith('/installed') &&
+          snapshot.value == '1') {
         final parts = key.split('/');
         if (parts.length == 3) result.add(parts[1]);
       }
@@ -63,8 +69,12 @@ class BibleLocalStore implements BibleContentStore {
 
   @override
   Future<String> readManifestJson(String translationId) async {
-    final value = await _records.record(_fileKey(translationId, 'manifest.json')).get(_database);
-    if (value == null) throw StateError('The installed Bible manifest is missing.');
+    final value = await _records
+        .record(_fileKey(translationId, 'manifest.json'))
+        .get(_database);
+    if (value == null) {
+      throw StateError('The installed Bible manifest is missing.');
+    }
     return value;
   }
 
@@ -79,12 +89,17 @@ class BibleLocalStore implements BibleContentStore {
     final value = await _records
         .record(_fileKey(translationId, 'books/$bookId/$chapter.json'))
         .get(_database);
-    if (value == null) throw StateError('This chapter is not available in the installed Bible.');
+    if (value == null) {
+      throw StateError('This chapter is not available in the installed Bible.');
+    }
     return value;
   }
 
   /// Atomically replaces a translation's records and marks it installed last.
-  Future<void> installFiles(String translationId, Map<String, String> files) async {
+  Future<void> installFiles(
+    String translationId,
+    Map<String, String> files,
+  ) async {
     final prefix = _prefix(translationId);
     await _database.transaction((transaction) async {
       final existing = await _records.find(transaction);
@@ -94,7 +109,9 @@ class BibleLocalStore implements BibleContentStore {
         }
       }
       for (final entry in files.entries) {
-        await _records.record(_fileKey(translationId, entry.key)).put(transaction, entry.value);
+        await _records
+            .record(_fileKey(translationId, entry.key))
+            .put(transaction, entry.value);
       }
       await _records.record('${prefix}installed').put(transaction, '1');
     });
