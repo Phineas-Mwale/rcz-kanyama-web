@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 
 import 'widgets/admin_widgets.dart';
 
@@ -181,7 +181,7 @@ class _AccountRow extends StatelessWidget {
     ]
         .map((value) => value?.toString() ?? '')
         .where((value) => value.isNotEmpty)
-        .join('  Â·  ');
+        .join('  ·  ');
     final registered = adminDateLabel(row['created_at']);
 
     final actions = <(AdminAccountAction, String, bool)>[

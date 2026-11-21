@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -643,7 +643,7 @@ class _Overview extends StatelessWidget {
       children: [
         AdminSectionHeader(
           title: 'Overview',
-          description: 'The current state of the congregationâ€™s digital '
+          description: 'The current state of the congregationâ€s digital '
               'platform.',
         ),
         const SizedBox(height: 20),

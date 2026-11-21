@@ -40,7 +40,6 @@ const _sections = [
   'B3',
   'C1',
   'C2',
-  'C3',
   'D1',
   'D2',
   'D3',
@@ -48,6 +47,7 @@ const _sections = [
   'E2',
   'F1',
   'F2',
+  'F3',
 ];
 
 Future<void> main() async {
